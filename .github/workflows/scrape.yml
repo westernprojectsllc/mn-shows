@@ -1,0 +1,40 @@
+name: Scrape and Deploy
+
+on:
+  schedule:
+    - cron: '0 12 * * *'  # Runs daily at 7am Central (noon UTC)
+  workflow_dispatch:  # Allows manual trigger from GitHub
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install requests beautifulsoup4 python-dateutil python-dotenv
+
+      - name: Run scraper
+        env:
+          TM_API_KEY: ${{ secrets.TM_API_KEY }}
+        run: python scraper.py
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: .
+          publish_branch: gh-pages
+          exclude_assets: '.github,scraper.py,.gitignore,.env,__pycache__'
