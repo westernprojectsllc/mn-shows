@@ -849,10 +849,35 @@ def write_html(shows):
     with open("past.html", "w") as f:
         f.write(past_html)
 
+    # Build sitemap.xml
+    base_url = "https://giglist.info"
+    today_str = today.strftime("%Y-%m-%d")
+    sitemap_urls = [
+        f'  <url><loc>{base_url}/</loc><lastmod>{today_str}</lastmod><changefreq>daily</changefreq></url>',
+        f'  <url><loc>{base_url}/list.html</loc><lastmod>{today_str}</lastmod><changefreq>daily</changefreq></url>',
+        f'  <url><loc>{base_url}/past.html</loc><lastmod>{today_str}</lastmod><changefreq>daily</changefreq></url>',
+    ]
+    for monday, label in all_weeks:
+        fname = f"week-{monday.strftime('%Y-%m-%d')}.html"
+        sitemap_urls.append(f'  <url><loc>{base_url}/{fname}</loc><lastmod>{today_str}</lastmod><changefreq>daily</changefreq></url>')
+
+    sitemap = f"""<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+{chr(10).join(sitemap_urls)}
+</urlset>"""
+
+    with open("sitemap.xml", "w") as f:
+        f.write(sitemap)
+
+    # Build robots.txt
+    with open("robots.txt", "w") as f:
+        f.write(f"User-agent: *\nAllow: /\nSitemap: {base_url}/sitemap.xml\n")
+
     print(f"\nWrote list.html ({len(upcoming)} upcoming shows, table view)")
     print(f"Wrote index.html with {len(all_weeks)} weeks (weekly view)")
     print(f"Wrote {len(all_weeks)} week pages")
     print(f"Wrote past.html with {len(past)} past shows")
+    print("Wrote sitemap.xml and robots.txt")
 
 
 if __name__ == "__main__":
