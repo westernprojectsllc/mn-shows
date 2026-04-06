@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: '0 12 * * *'  # Runs daily at 7am Central (noon UTC)
   workflow_dispatch:  # Allows manual trigger from GitHub
+  push:
+    branches: [main]
+    paths-ignore:
+      - '.gitignore'
+      - 'README.md'
 
 jobs:
   scrape:
