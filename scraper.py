@@ -1,9 +1,13 @@
 import os
+import re
+import json
 import requests
 from bs4 import BeautifulSoup
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, date, timedelta
 from dateutil.relativedelta import relativedelta
 from html import escape, unescape
+from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -11,6 +15,9 @@ load_dotenv()
 BASE_URL = "https://first-avenue.com/shows"
 MONTHS_AHEAD = 10
 REQUEST_TIMEOUT = 15
+USER_AGENT = "Mozilla/5.0"
+HTTP_HEADERS = {"User-Agent": USER_AGENT}
+CENTRAL_TZ = ZoneInfo("America/Chicago")
 
 VENUE_URLS = {
     "First Avenue":           "https://first-avenue.com",
@@ -34,13 +41,18 @@ VENUE_URLS = {
     "Target Center":          "https://www.targetcenter.com",
     "U.S. Bank Stadium":      "https://www.usbankstadium.com",
     "Myth Live":              "https://mythlive.com",
+    "Ice House":              "https://www.icehousempls.com/",
+    "White Squirrel":         "https://whitesquirrelbar.com/",
+    "331 Club":               "https://331club.com/",
+    "Skyway Theatre":         "https://skywaytheatre.com/",
+    "The Loft at Skyway Theatre": "https://skywaytheatre.com/",
 }
 
 
 def scrape_month(start_date):
     date_str = start_date.strftime("%Y%m%d")
     url = f"{BASE_URL}?post_type=event&start_date={date_str}"
-    response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=REQUEST_TIMEOUT)
+    response = requests.get(url, headers=HTTP_HEADERS, timeout=REQUEST_TIMEOUT)
     soup = BeautifulSoup(response.text, "html.parser")
 
     shows = []
@@ -90,10 +102,10 @@ def scrape_month(start_date):
 def scrape_first_avenue():
     all_shows = []
     seen_urls = set()
-    today = datetime.today().replace(day=1)
+    start_month = datetime.today().replace(day=1)
 
     for i in range(MONTHS_AHEAD):
-        month = today + relativedelta(months=i)
+        month = start_month + relativedelta(months=i)
         print(f"Scraping {month.strftime('%B %Y')}...")
         try:
             shows = scrape_month(month)
@@ -117,7 +129,7 @@ def scrape_dakota():
         url = f"https://www.dakotacooks.com/wp-json/tribe/events/v1/events?per_page=50&page={page}&start_date={today_str}"
         print(f"  Fetching Dakota page {page}...")
         try:
-            response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=REQUEST_TIMEOUT)
+            response = requests.get(url, headers=HTTP_HEADERS, timeout=REQUEST_TIMEOUT)
             data = response.json()
         except Exception as e:
             print(f"  Error: {e}")
@@ -132,20 +144,15 @@ def scrape_dakota():
             if not start:
                 continue
             try:
-                sort_date = datetime.strptime(start, "%Y-%m-%d %H:%M:%S").date()
+                dt = datetime.strptime(start, "%Y-%m-%d %H:%M:%S")
             except ValueError:
                 continue
+            sort_date = dt.date()
+            show_time = (
+                dt.strftime("%-I:%M%p").lower().replace(":00", "")
+                if dt.hour != 0 else None
+            )
 
-            # Parse show time from start_date
-            show_time = None
-            try:
-                dt = datetime.strptime(start, "%Y-%m-%d %H:%M:%S")
-                if dt.hour != 0:
-                    show_time = dt.strftime("%-I:%M%p").lower().replace(":00", "")
-            except ValueError:
-                pass
-
-            # Price from cost field
             cost = event.get("cost", "")
             price_str = cost if cost else None
 
@@ -171,7 +178,12 @@ def scrape_dakota():
 
 def scrape_cedar():
     url = "https://www.thecedar.org/events"
-    response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=REQUEST_TIMEOUT)
+    print("  Fetching Cedar Cultural Center...")
+    try:
+        response = requests.get(url, headers=HTTP_HEADERS, timeout=REQUEST_TIMEOUT)
+    except Exception as e:
+        print(f"  Error: {e}")
+        return []
     soup = BeautifulSoup(response.text, "html.parser")
 
     shows = []
@@ -217,10 +229,10 @@ def scrape_orchestra():
     seen_ids = set()
     today = date.today()
 
-    for mos in range(1, 25):
+    for mos in range(1, MONTHS_AHEAD + 1):
         url = f"https://www.minnesotaorchestra.org/api/event-feed/{mos}"
         try:
-            response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=REQUEST_TIMEOUT)
+            response = requests.get(url, headers=HTTP_HEADERS, timeout=REQUEST_TIMEOUT)
         except Exception:
             continue
         if response.status_code != 200:
@@ -269,6 +281,9 @@ def scrape_orchestra():
 
 
 def scrape_ticketmaster(api_key):
+    if not api_key:
+        print("  Skipping Ticketmaster (no TM_API_KEY set)")
+        return []
     venue_ids = {
         "Orpheum Theatre":        "KovZpakSUe",
         "State Theatre":          "KovZpZAF76tA",
@@ -356,6 +371,7 @@ def scrape_ticketmaster(api_key):
                     "sold_out": sold_out,
                     "time": show_time,
                     "supports": supports,
+                    "doors": None,
                 })
 
             page_info = data.get("page", {})
@@ -368,7 +384,12 @@ def scrape_ticketmaster(api_key):
 
 def scrape_myth():
     url = "https://mythlive.com/"
-    response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=REQUEST_TIMEOUT)
+    print("  Fetching Myth Live...")
+    try:
+        response = requests.get(url, headers=HTTP_HEADERS, timeout=REQUEST_TIMEOUT)
+    except Exception as e:
+        print(f"  Error: {e}")
+        return []
     soup = BeautifulSoup(response.text, "html.parser")
 
     shows = []
@@ -402,6 +423,355 @@ def scrape_myth():
     return shows
 
 
+def scrape_white_squirrel():
+    shows = []
+    page = 1
+    today_str = date.today().strftime("%Y-%m-%d")
+
+    while True:
+        url = (
+            f"https://whitesquirrelbar.com/wp-json/tribe/events/v1/events"
+            f"?per_page=50&page={page}&start_date={today_str}"
+        )
+        print(f"  Fetching White Squirrel page {page}...")
+        try:
+            response = requests.get(url, headers=HTTP_HEADERS, timeout=REQUEST_TIMEOUT)
+            data = response.json()
+        except Exception as e:
+            print(f"  Error: {e}")
+            break
+
+        events = data.get("events", [])
+        if not events:
+            break
+
+        for event in events:
+            start = event.get("start_date", "")
+            if not start:
+                continue
+            try:
+                dt = datetime.strptime(start, "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                continue
+            sort_date = dt.date()
+            show_time = (
+                dt.strftime("%-I:%M%p").lower().replace(":00", "")
+                if dt.hour != 0 else None
+            )
+
+            cost = event.get("cost", "")
+            shows.append({
+                "title": unescape(event.get("title", "Unknown")),
+                "sort_date": sort_date,
+                "venue": "White Squirrel",
+                "url": event.get("url", ""),
+                "price": cost if cost else None,
+                "sold_out": False,
+                "time": show_time,
+                "supports": [],
+                "doors": None,
+            })
+
+        if page >= data.get("total_pages", 1):
+            break
+        page += 1
+
+    return shows
+
+
+def scrape_icehouse():
+    url = "https://icehouse.turntabletickets.com/"
+    print("  Fetching Ice House...")
+    try:
+        response = requests.get(url, headers=HTTP_HEADERS, timeout=REQUEST_TIMEOUT)
+    except Exception as e:
+        print(f"  Error: {e}")
+        return []
+
+    # Ice House embeds data as a Python dict literal containing JSON values.
+    # Extract just the pagination JSON object, which contains "performances".
+    match = re.search(r"'pagination':\s*", response.text)
+    if not match:
+        print("  Could not find pagination data in Ice House page")
+        return []
+
+    try:
+        decoder = json.JSONDecoder()
+        data, _ = decoder.raw_decode(response.text[match.end():])
+    except (json.JSONDecodeError, ValueError):
+        print("  Failed to parse Ice House JSON")
+        return []
+
+    shows = []
+    today = date.today()
+
+    for perf in data.get("performances", []):
+        show = perf.get("show", {})
+        title = show.get("name", "Unknown")
+        show_id = show.get("id")
+
+        dt_str = perf.get("datetime", "")
+        if not dt_str:
+            continue
+        try:
+            dt_utc = datetime.strptime(dt_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=ZoneInfo("UTC"))
+            dt_local = dt_utc.astimezone(CENTRAL_TZ)
+            sort_date = dt_local.date()
+        except ValueError:
+            continue
+
+        if sort_date < today:
+            continue
+
+        # Format show time from the local datetime
+        h12 = dt_local.hour % 12 or 12
+        ampm = "am" if dt_local.hour < 12 else "pm"
+        show_time = f"{h12}:{dt_local.minute:02d}{ampm}" if dt_local.minute else f"{h12}{ampm}"
+
+        prices = show.get("price_per_person", [])
+        price_str = None
+        if prices:
+            try:
+                vals = sorted(set(float(p) for p in prices if p))
+                if len(vals) >= 2 and abs(vals[-1] - vals[0]) > 1:
+                    price_str = f"${vals[0]:.0f}-${vals[-1]:.0f}"
+                elif vals:
+                    price_str = f"${vals[0]:.0f}"
+            except (ValueError, TypeError):
+                pass
+
+        show_url = (
+            f"https://icehouse.turntabletickets.com/shows/{show_id}/"
+            if show_id else url
+        )
+
+        shows.append({
+            "title": title,
+            "sort_date": sort_date,
+            "venue": "Ice House",
+            "url": show_url,
+            "price": price_str,
+            "sold_out": False,
+            "time": show_time,
+            "supports": [],
+            "doors": None,
+        })
+
+    return shows
+
+
+_331_TIME_RE = re.compile(
+    r"^\s*\d+(?::\d+)?\s*(?:[-–]\s*\d+(?::\d+)?)?\s*(?:am|pm)\s*$",
+    re.I,
+)
+_331_TIME_PARSE = re.compile(r"^(\d+(?::\d+)?)(?:[-–]\d+(?::\d+)?)?(am|pm)$")
+_331_BR_RE = re.compile(r"<br\s*/?>")
+
+
+def scrape_331():
+    """331 Club's homepage contains a full calendar of upcoming shows in
+    .event divs with month/date/day spans. The /event/ subpage only renders
+    one upcoming show server-side, so we use the homepage instead."""
+    url = "https://331club.com/"
+    print("  Fetching 331 Club...")
+    try:
+        response = requests.get(url, headers=HTTP_HEADERS, timeout=REQUEST_TIMEOUT)
+    except Exception as e:
+        print(f"  Error: {e}")
+        return []
+
+    soup = BeautifulSoup(response.text, "html.parser")
+    shows = []
+    today = date.today()
+
+    months = {
+        "Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4, "May": 5, "Jun": 6,
+        "Jul": 7, "Aug": 8, "Sep": 9, "Oct": 10, "Nov": 11, "Dec": 12,
+    }
+
+    for event_div in soup.select("div.event"):
+        date_div = event_div.find("div", class_="event-date")
+        if not date_div:
+            continue
+        month_el = date_div.find("span", class_="month")
+        day_el = date_div.find("span", class_="date")
+        if not month_el or not day_el:
+            continue
+        try:
+            month = months[month_el.get_text(strip=True)[:3]]
+            day = int(day_el.get_text(strip=True))
+        except (KeyError, ValueError):
+            continue
+
+        # Year inference: assume current year, roll over if past
+        sort_date = date(today.year, month, day)
+        if sort_date < today - timedelta(days=14):
+            sort_date = sort_date.replace(year=today.year + 1)
+
+        content = event_div.find("div", class_="event-content")
+        if not content:
+            continue
+
+        # Each <p> is one show: title + optional supporting acts + a time.
+        # Lines are <br>-separated; each line may have its own <a> link.
+        for p in content.find_all("p"):
+            chunks = _331_BR_RE.split(p.decode_contents())
+            lines = []  # list of (text, href|None)
+            for chunk in chunks:
+                sub = BeautifulSoup(chunk, "html.parser")
+                text = sub.get_text(" ", strip=True).replace("\xa0", " ").strip()
+                if not text:
+                    continue
+                a = sub.find("a")
+                href = a.get("href") if a and a.get("href") else None
+                lines.append((text, href))
+
+            if not lines:
+                continue
+
+            # Find time: last line matching a time pattern.
+            show_time = None
+            title_lines = lines[:]
+            for i in range(len(lines) - 1, -1, -1):
+                if _331_TIME_RE.match(lines[i][0]):
+                    raw_time = lines[i][0].lower().replace(" ", "")
+                    # Normalize "6-8pm" → "6pm", "9:30pm" stays
+                    m = _331_TIME_PARSE.match(raw_time)
+                    if m:
+                        show_time = m.group(1) + m.group(2)
+                    title_lines = lines[:i]
+                    break
+
+            if not title_lines:
+                continue
+
+            # Drop generic intro phrases and noise lines
+            cleaned = []
+            for text, href in title_lines:
+                if text.lower() in ("free", "no cover", "tba", "tbd"):
+                    continue
+                cleaned.append((text, href))
+            if not cleaned:
+                continue
+
+            title, title_href = cleaned[0]
+            supports = [t for t, _ in cleaned[1:]]
+
+            # URL: prefer the link attached to the title line, else any link in the <p>
+            href = title_href
+            if not href:
+                for _, h in cleaned:
+                    if h:
+                        href = h
+                        break
+            if not href:
+                href = url
+
+            shows.append({
+                "title": title,
+                "sort_date": sort_date,
+                "venue": "331 Club",
+                "url": href,
+                "price": None,
+                "sold_out": False,
+                "time": show_time,
+                "supports": supports,
+                "doors": None,
+            })
+
+    return shows
+
+
+def scrape_skyway():
+    """Skyway Theatre's events page embeds a FullCalendar config containing
+    all events as JSON inside an inline <script>. We extract the eventSources
+    array and parse each event."""
+    url = "https://skywaytheatre.com/events/"
+    print("  Fetching Skyway Theatre...")
+    try:
+        response = requests.get(url, headers=HTTP_HEADERS, timeout=REQUEST_TIMEOUT)
+    except Exception as e:
+        print(f"  Error: {e}")
+        return []
+
+    match = re.search(r"eventSources:\s*", response.text)
+    if not match:
+        print("  Could not find eventSources in Skyway page")
+        return []
+
+    try:
+        decoder = json.JSONDecoder()
+        sources, _ = decoder.raw_decode(response.text[match.end():])
+    except (json.JSONDecodeError, ValueError) as e:
+        print(f"  Failed to parse Skyway JSON: {e}")
+        return []
+
+    # eventSources is a list of lists of event dicts
+    events = []
+    for src in sources:
+        if isinstance(src, list):
+            events.extend(src)
+        elif isinstance(src, dict):
+            events.append(src)
+
+    shows = []
+    today = date.today()
+    seen = set()
+
+    for ev in events:
+        title = ev.get("title", "").strip()
+        start = ev.get("start", "")
+        if not title or not start:
+            continue
+
+        try:
+            dt = datetime.fromisoformat(start)
+            sort_date = dt.date()
+        except ValueError:
+            continue
+        if sort_date < today:
+            continue
+
+        permalink = ev.get("permalink", url)
+        details = ev.get("details", "") or ""
+        details_lower = details.lower()
+
+        # Detect Loft vs main stage from details text
+        if "loft" in details_lower:
+            venue_name = "The Loft at Skyway Theatre"
+        else:
+            venue_name = "Skyway Theatre"
+
+        # Format time
+        hour = dt.hour
+        minute = dt.minute
+        ampm = "am" if hour < 12 else "pm"
+        h12 = hour % 12 or 12
+        show_time = f"{h12}:{minute:02d}{ampm}" if minute else f"{h12}{ampm}"
+
+        # Unescape HTML entities in title
+        title = unescape(title)
+
+        key = (title, sort_date, venue_name)
+        if key in seen:
+            continue
+        seen.add(key)
+
+        shows.append({
+            "title": title,
+            "sort_date": sort_date,
+            "venue": venue_name,
+            "url": permalink,
+            "price": None,
+            "sold_out": False,
+            "time": show_time,
+            "supports": [],
+            "doors": None,
+        })
+
+    return shows
+
+
 FIRST_AVE_VENUES = {
     "First Avenue", "7th St Entry", "Palace Theatre",
     "The Fitzgerald Theater", "Fine Line", "Turf Club",
@@ -409,9 +779,35 @@ FIRST_AVE_VENUES = {
 }
 
 
-def enrich_show_details(shows):
-    """Scrape individual show pages for doors, show time, and price.
-    Only enriches shows in the upcoming month to limit requests."""
+def _enrich_one(show):
+    """Fetch a single First Ave show page and update show dict in place
+    with doors and show time. Safe to call from worker threads."""
+    url = show["url"]
+    if not url.startswith("http"):
+        url = "https://first-avenue.com" + url
+
+    try:
+        resp = requests.get(url, headers=HTTP_HEADERS, timeout=REQUEST_TIMEOUT)
+        soup = BeautifulSoup(resp.text, "html.parser")
+    except Exception:
+        return
+
+    for h6 in soup.find_all("h6"):
+        label = h6.get_text(strip=True).lower()
+        h2 = h6.find_next("h2")
+        if not h2:
+            continue
+        value = h2.get_text(strip=True)
+
+        if "doors" in label:
+            show["doors"] = value.lower()
+        elif "show" in label:
+            show["time"] = value.lower()
+
+
+def enrich_show_details(shows, max_workers=8):
+    """Scrape individual First Avenue show pages in parallel for doors and
+    show time. Only enriches shows in the upcoming month to limit requests."""
     today = date.today()
     cutoff = today + timedelta(days=31)
 
@@ -422,34 +818,10 @@ def enrich_show_details(shows):
 
     print(f"\nEnriching {len(to_enrich)} shows with detail pages...")
 
-    for i, show in enumerate(to_enrich):
-        url = show["url"]
-        if not url.startswith("http"):
-            url = "https://first-avenue.com" + url
-
-        try:
-            resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=REQUEST_TIMEOUT)
-            soup = BeautifulSoup(resp.text, "html.parser")
-        except Exception:
-            continue
-
-        # Find all h6 labels and their following h2 values
-        for h6 in soup.find_all("h6"):
-            label = h6.get_text(strip=True).lower()
-            h2 = h6.find_next("h2")
-            if not h2:
-                continue
-            value = h2.get_text(strip=True)
-
-            if "doors" in label:
-                show["doors"] = value.lower()
-            elif "show" in label:
-                show["time"] = value.lower()
-            elif "price" in label or "ticket" in label or "cost" in label:
-                show["price"] = value
-
-        if (i + 1) % 20 == 0:
-            print(f"  Enriched {i + 1}/{len(to_enrich)}...")
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        for i, _ in enumerate(executor.map(_enrich_one, to_enrich), start=1):
+            if i % 20 == 0:
+                print(f"  Enriched {i}/{len(to_enrich)}...")
 
     print(f"  Done enriching {len(to_enrich)} shows")
     return shows
@@ -521,7 +893,6 @@ PAGE_STYLE = """
     .venue-link { font-weight: bold; }
     .venue-link a { color: #00c; text-decoration: underline; }
     .show-link a { color: #00c; }
-    .price { color: #333; }
     .supports { color: #333; }
     .time { color: #555; }
     .sold-out { color: #c00; font-weight: bold; }
@@ -570,14 +941,17 @@ def build_day_rows(week_shows):
             venue_url = VENUE_URLS.get(venue, "")
             title_safe = escape(show["title"])
             venue_safe = escape(venue)
-            show_url = escape(show["url"])
+            show_url = show["url"]
 
             if venue_url:
                 venue_html = f'<span class="venue-link"><a href="{escape(venue_url)}">{venue_safe}</a></span>'
             else:
                 venue_html = f'<span class="venue-link">{venue_safe}</span>'
 
-            show_html = f'<span class="show-link"><a href="{show_url}">{title_safe}</a></span>'
+            if show_url:
+                show_html = f'<span class="show-link"><a href="{escape(show_url)}">{title_safe}</a></span>'
+            else:
+                show_html = f'<span class="show-link">{title_safe}</span>'
 
             # Supporting acts
             supports = show.get("supports", [])
@@ -586,8 +960,6 @@ def build_day_rows(week_shows):
                 show_html += f' <span class="supports">with {support_str}</span>'
 
             extras = []
-            if show.get("price"):
-                extras.append(f'<span class="price">{escape(show["price"])}</span>')
             if show.get("doors") and show.get("time"):
                 extras.append(f'<span class="time">{escape(show["doors"])}/{escape(show["time"])}</span>')
             elif show.get("doors"):
@@ -667,20 +1039,24 @@ def build_table(shows):
             date_display = show["sort_date"].strftime("%b %-d")
             day_name = show["sort_date"].strftime("%a")
             title_safe = escape(show["title"])
-            url_safe = escape(show["url"])
             venue_safe = escape(show["venue"])
+            if show["url"]:
+                title_cell = f'<a href="{escape(show["url"])}">{title_safe}</a>'
+            else:
+                title_cell = title_safe
             rows.append(
                 f'  <tr>'
                 f'<td>{day_name} {date_display}</td>'
                 f'<td>{venue_safe}</td>'
-                f'<td><a href="{url_safe}">{title_safe}</a></td>'
+                f'<td>{title_cell}</td>'
                 f'</tr>'
             )
     return "\n".join(rows)
 
 
-def write_table_html(shows, upcoming, past, updated):
-    # Main table page
+def write_table_html(upcoming, past, updated):
+    # Main table page (past.html is written separately by write_html in the
+    # styled-list format and would otherwise overwrite a table version here)
     upcoming_html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -706,32 +1082,6 @@ def write_table_html(shows, upcoming, past, updated):
     with open("list.html", "w") as f:
         f.write(upcoming_html)
 
-    # Past table page
-    past_html = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>Minnesota Show List - Past</title>
-  <style>
-{TABLE_STYLE}
-  </style>
-</head>
-<body>
-  <h1>Minnesota Show List - Past</h1>
-  <p class="subtitle">Updated: {updated} &mdash; {len(past)} past shows</p>
-  <nav>
-    <a href="list.html">Upcoming Shows ({len(upcoming)})</a>
-    <a href="index.html">Weekly View</a>
-  </nav>
-  <table>
-{build_table(past)}
-  </table>
-</body>
-</html>"""
-
-    with open("past.html", "w") as f:
-        f.write(past_html)
-
 
 def write_html(shows):
     updated = datetime.now().strftime("%B %d, %Y at %I:%M %p")
@@ -742,8 +1092,8 @@ def write_html(shows):
     upcoming = [s for s in shows if s["sort_date"] >= week_start]
     past = [s for s in shows if one_month_ago <= s["sort_date"] < week_start]
 
-    # Write original table format
-    write_table_html(shows, upcoming, past, updated)
+    # Write list.html (table format)
+    write_table_html(upcoming, past, updated)
 
     # Group upcoming shows by week
     weeks = {}
@@ -820,12 +1170,15 @@ def write_html(shows):
             venue_url = VENUE_URLS.get(venue, "")
             title_safe = escape(show["title"])
             venue_safe = escape(venue)
-            show_url = escape(show["url"])
+            show_url = show["url"]
             if venue_url:
                 venue_html = f'<span class="venue-link"><a href="{escape(venue_url)}">{venue_safe}</a></span>'
             else:
                 venue_html = f'<span class="venue-link">{venue_safe}</span>'
-            show_html = f'<span class="show-link"><a href="{show_url}">{title_safe}</a></span>'
+            if show_url:
+                show_html = f'<span class="show-link"><a href="{escape(show_url)}">{title_safe}</a></span>'
+            else:
+                show_html = f'<span class="show-link">{title_safe}</span>'
             past_rows.append(f"<li>{venue_html} {show_html}</li>")
         past_rows.append("</ul></li>")
 
@@ -888,6 +1241,10 @@ if __name__ == "__main__":
     shows += scrape_orchestra()
     shows += scrape_ticketmaster(TM_API_KEY)
     shows += scrape_myth()
+    shows += scrape_white_squirrel()
+    shows += scrape_icehouse()
+    shows += scrape_331()
+    shows += scrape_skyway()
     shows.sort(key=lambda x: x["sort_date"])
     shows = deduplicate(shows)
     shows = filter_junk_and_sports(shows)
