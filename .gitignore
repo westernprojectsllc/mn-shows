@@ -1,3 +1,13 @@
 .env
 __pycache__/
 *.pyc
+.DS_Store
+.claude/
+
+# Generated build output (built fresh by GitHub Actions)
+index.html
+list.html
+past.html
+week-*.html
+sitemap.xml
+robots.txt
