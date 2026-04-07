@@ -4,6 +4,7 @@ import json
 import requests
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from datetime import datetime, date, timedelta
 from dateutil.relativedelta import relativedelta
 from html import escape, unescape
@@ -1386,17 +1387,15 @@ def scrape_aster_cafe():
             if sort_date < today or sort_date > cutoff:
                 continue
 
-            weekday_key = _ASTER_WEEKDAYS[sort_date.weekday()]
-            day_hours = hours.get(weekday_key) or {}
+            day_hours = hours.get(_ASTER_WEEKDAYS[sort_date.weekday()]) or {}
             show_time = None
-            if day_hours.get("enabled") and day_hours.get("start"):
+            start = day_hours.get("start") if day_hours.get("enabled") else None
+            if start:
                 try:
-                    h, m, _ = day_hours["start"].split(":")
-                    dt = datetime(
-                        sort_date.year, sort_date.month, sort_date.day,
-                        int(h), int(float(m)),
+                    h, m = start.split(":", 2)[:2]
+                    show_time = _format_local_time(
+                        datetime(2000, 1, 1, int(h), int(m))
                     )
-                    show_time = _format_local_time(dt)
                 except (ValueError, TypeError):
                     pass
 
@@ -1422,10 +1421,10 @@ FIRST_AVE_VENUES = {
 }
 
 
-def _enrich_one(show):
+def _enrich_one(session, show):
     """Fetch a single First Ave show page and update show dict in place
     with doors and show time. Retries once on transient failure. Safe to
-    call from worker threads."""
+    call from worker threads — requests.Session.get is threadsafe."""
     url = show["url"]
     if not url.startswith("http"):
         url = "https://first-avenue.com" + url
@@ -1433,7 +1432,7 @@ def _enrich_one(show):
     soup = None
     for attempt in range(2):
         try:
-            resp = requests.get(url, headers=HTTP_HEADERS, timeout=REQUEST_TIMEOUT)
+            resp = session.get(url, headers=HTTP_HEADERS, timeout=REQUEST_TIMEOUT)
             soup = BeautifulSoup(resp.text, "html.parser")
             break
         except Exception:
@@ -1467,10 +1466,21 @@ def enrich_show_details(shows, max_workers=16):
 
     print(f"\nEnriching {len(to_enrich)} shows with detail pages...")
 
+    # One pooled HTTPS session shared across workers — every enrichment
+    # request hits first-avenue.com, so reusing the TCP/TLS connection
+    # avoids ~300 fresh handshakes.
+    session = requests.Session()
+    adapter = requests.adapters.HTTPAdapter(
+        pool_connections=max_workers, pool_maxsize=max_workers,
+    )
+    session.mount("https://", adapter)
+    fetch = partial(_enrich_one, session)
+
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        for i, _ in enumerate(executor.map(_enrich_one, to_enrich), start=1):
+        for i, _ in enumerate(executor.map(fetch, to_enrich), start=1):
             if i % 20 == 0:
                 print(f"  Enriched {i}/{len(to_enrich)}...")
+    session.close()
 
     print(f"  Done enriching {len(to_enrich)} shows")
     return shows
