@@ -50,6 +50,7 @@ VENUE_URLS = {
     "Underground Music Venue": "https://www.undergroundmusicvenue.com/events",
     "Zhora Darling":          "https://www.zhoradarling.com/events",
     "Cloudland Theater":      "https://www.cloudlandtheater.com/",
+    "The Parkway Theater":    "https://theparkwaytheater.com/live-events",
 }
 
 DICE_API_URL = "https://partners-endpoint.dice.fm/api/v2/events"
@@ -980,9 +981,11 @@ def _parse_dice_time_str(s):
     return _format_local_time(dt)
 
 
-def _scrape_dice(venue_name, dice_venues, dice_promoters=None):
+def _scrape_dice(venue_name, dice_venues, dice_promoters=None, exclude_tags=None):
     """Generic Dice.fm partners API scraper. dice_venues is the list of
-    venue names to filter by; dice_promoters is optional."""
+    venue names to filter by; dice_promoters is optional. exclude_tags is
+    a set of Dice type_tags to skip (e.g. {'culture:film'} to drop movies)."""
+    exclude_tags = set(exclude_tags or [])
     print(f"  Fetching {venue_name} (Dice)...")
     params = [("page[size]", "100"), ("types", "linkout,event")]
     for v in dice_venues:
@@ -1009,6 +1012,8 @@ def _scrape_dice(venue_name, dice_venues, dice_promoters=None):
         name = (ev.get("name") or "").strip()
         date_str = ev.get("date")
         if not name or not date_str:
+            continue
+        if exclude_tags and any(t in exclude_tags for t in (ev.get("type_tags") or [])):
             continue
 
         try:
@@ -1075,6 +1080,14 @@ def scrape_zhora_darling():
 
 def scrape_cloudland():
     return _scrape_dice("Cloudland Theater", dice_venues=["Cloudland Theater"])
+
+
+def scrape_parkway():
+    return _scrape_dice(
+        "The Parkway Theater",
+        dice_venues=["The Parkway Theater"],
+        exclude_tags={"culture:film"},
+    )
 
 
 FIRST_AVE_VENUES = {
@@ -1554,6 +1567,7 @@ if __name__ == "__main__":
     shows += scrape_underground()
     shows += scrape_zhora_darling()
     shows += scrape_cloudland()
+    shows += scrape_parkway()
     shows.sort(key=lambda x: x["sort_date"])
     shows = deduplicate(shows)
     shows = filter_junk_and_sports(shows)
