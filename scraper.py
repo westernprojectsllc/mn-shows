@@ -101,10 +101,14 @@ def scrape_month(start_date):
                     sold_out = True
                     break
 
+            venue_name = venue.get_text(strip=True) if venue else "First Avenue"
+            # Normalize First Ave family venue names to match VENUE_URLS keys
+            venue_name = {"Armory": "The Armory"}.get(venue_name, venue_name)
+
             shows.append({
                 "title": title_tag.get_text(separator=" ", strip=True),
                 "sort_date": sort_date,
-                "venue": venue.get_text(strip=True) if venue else "First Avenue",
+                "venue": venue_name,
                 "url": title_tag["href"],
                 "price": None,
                 "sold_out": sold_out,
@@ -452,6 +456,20 @@ def scrape_myth():
             cta = event.select_one(".rhp-event-cta")
             sold_out = bool(cta and "sold-out" in cta.get("class", []))
 
+            # Doors / show times live in .rhp-event__time--list e.g.
+            # "Doors: 8:30 pm // Show: 9:30 pm"
+            doors = None
+            show_time = None
+            time_el = event.select_one(".rhp-event__time--list")
+            if time_el:
+                ttext = time_el.get_text(" ", strip=True)
+                dm = re.search(r"doors?\s*:?\s*(\d{1,2}(?::\d{2})?\s*[ap]\.?m\.?)", ttext, re.I)
+                sm = re.search(r"show\s*:?\s*(\d{1,2}(?::\d{2})?\s*[ap]\.?m\.?)", ttext, re.I)
+                doors = _parse_loose_time(dm.group(1)) if dm else None
+                show_time = _parse_loose_time(sm.group(1)) if sm else None
+            if doors == show_time:
+                doors = None
+
             shows.append({
                 "title": link.get("title", "Unknown"),
                 "sort_date": sort_date,
@@ -459,9 +477,9 @@ def scrape_myth():
                 "url": link["href"],
                 "price": None,
                 "sold_out": sold_out,
-                "time": None,
+                "time": show_time,
                 "supports": [],
-                "doors": None,
+                "doors": doors,
             })
 
     return shows
@@ -996,6 +1014,20 @@ def _format_local_time(dt_local):
     return f"{h12}{ampm}"
 
 
+def _parse_loose_time(s):
+    """Parse a loose time string like '8:30 pm', '8:30pm', '9PM', '9 P.M.'
+    into the canonical '8:30pm' / '9pm' format. Returns None on failure."""
+    if not s:
+        return None
+    cleaned = re.sub(r"[.\s]", "", s).upper()  # '8:30PM'
+    for fmt in ("%I:%M%p", "%I%p"):
+        try:
+            return _format_local_time(datetime.strptime(cleaned, fmt))
+        except ValueError:
+            continue
+    return None
+
+
 def _parse_dice_time_str(s):
     """Parse a Dice lineup time like '7:00 PM' into '7pm'/'7:30pm'."""
     if not s:
@@ -1302,15 +1334,22 @@ FIRST_AVE_VENUES = {
 
 def _enrich_one(show):
     """Fetch a single First Ave show page and update show dict in place
-    with doors and show time. Safe to call from worker threads."""
+    with doors and show time. Retries once on transient failure. Safe to
+    call from worker threads."""
     url = show["url"]
     if not url.startswith("http"):
         url = "https://first-avenue.com" + url
 
-    try:
-        resp = requests.get(url, headers=HTTP_HEADERS, timeout=REQUEST_TIMEOUT)
-        soup = BeautifulSoup(resp.text, "html.parser")
-    except Exception:
+    soup = None
+    for attempt in range(2):
+        try:
+            resp = requests.get(url, headers=HTTP_HEADERS, timeout=REQUEST_TIMEOUT)
+            soup = BeautifulSoup(resp.text, "html.parser")
+            break
+        except Exception:
+            if attempt == 1:
+                return
+    if soup is None:
         return
 
     for h6 in soup.find_all("h6"):
@@ -1326,14 +1365,13 @@ def _enrich_one(show):
             show["time"] = value.lower()
 
 
-def enrich_show_details(shows, max_workers=8):
+def enrich_show_details(shows, max_workers=16):
     """Scrape individual First Avenue show pages in parallel for doors and
-    show time. Only enriches shows in the upcoming month to limit requests."""
+    show time. Enriches every upcoming First Ave family show."""
     today = date.today()
-    cutoff = today + timedelta(days=31)
 
     to_enrich = [s for s in shows
-                 if today <= s["sort_date"] <= cutoff
+                 if s["sort_date"] >= today
                  and s["venue"] in FIRST_AVE_VENUES
                  and s["url"]]
 
