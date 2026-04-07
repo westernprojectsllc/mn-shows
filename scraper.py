@@ -48,7 +48,11 @@ VENUE_URLS = {
     "The Loft at Skyway Theatre": "https://skywaytheatre.com/",
     "Pilllar Forum":          "https://www.pilllar.com/pages/events",
     "Underground Music Venue": "https://www.undergroundmusicvenue.com/events",
+    "Zhora Darling":          "https://www.zhoradarling.com/events",
 }
+
+DICE_API_URL = "https://partners-endpoint.dice.fm/api/v2/events"
+DICE_API_KEY = "nJgJNUHjJM4Yuzmwo4LIe7nu1JDqGqnl8icHUeC9"
 
 
 def scrape_month(start_date):
@@ -951,6 +955,123 @@ def scrape_underground():
     return shows
 
 
+def _format_local_time(dt_local):
+    """Format a local datetime as e.g. '7:30pm' or '7pm'."""
+    h12 = dt_local.hour % 12 or 12
+    ampm = "am" if dt_local.hour < 12 else "pm"
+    if dt_local.minute:
+        return f"{h12}:{dt_local.minute:02d}{ampm}"
+    return f"{h12}{ampm}"
+
+
+def _parse_dice_time_str(s):
+    """Parse a Dice lineup time like '7:00 PM' into '7pm'/'7:30pm'."""
+    if not s:
+        return None
+    s = s.strip()
+    try:
+        dt = datetime.strptime(s, "%I:%M %p")
+    except ValueError:
+        try:
+            dt = datetime.strptime(s, "%I %p")
+        except ValueError:
+            return None
+    return _format_local_time(dt)
+
+
+def _scrape_dice(venue_name, dice_venues, dice_promoters=None):
+    """Generic Dice.fm partners API scraper. dice_venues is the list of
+    venue names to filter by; dice_promoters is optional."""
+    print(f"  Fetching {venue_name} (Dice)...")
+    params = [("page[size]", "100"), ("types", "linkout,event")]
+    for v in dice_venues:
+        params.append(("filter[venues][]", v))
+    for p in dice_promoters or []:
+        params.append(("filter[promoters][]", p))
+
+    try:
+        response = requests.get(
+            DICE_API_URL,
+            params=params,
+            headers={"x-api-key": DICE_API_KEY, "User-Agent": USER_AGENT},
+            timeout=REQUEST_TIMEOUT,
+        )
+        data = response.json()
+    except Exception as e:
+        print(f"  Error: {e}")
+        return []
+
+    today = date.today()
+    shows = []
+
+    for ev in data.get("data", []):
+        name = (ev.get("name") or "").strip()
+        date_str = ev.get("date")
+        if not name or not date_str:
+            continue
+
+        try:
+            dt_utc = datetime.strptime(date_str, "%Y-%m-%dT%H:%M:%SZ").replace(
+                tzinfo=ZoneInfo("UTC")
+            )
+        except ValueError:
+            continue
+        dt_local = dt_utc.astimezone(CENTRAL_TZ)
+        sort_date = dt_local.date()
+        if sort_date < today:
+            continue
+
+        # Try to extract show + doors times from the lineup field
+        show_time = None
+        doors = None
+        for entry in ev.get("lineup") or []:
+            label = (entry.get("details") or "").lower()
+            t = entry.get("time")
+            if not t:
+                continue
+            if "door" in label:
+                doors = _parse_dice_time_str(t)
+            elif "show" in label and not show_time:
+                show_time = _parse_dice_time_str(t)
+
+        # Fall back to the event start time
+        if not show_time:
+            show_time = _format_local_time(dt_local)
+
+        # Drop doors if it's identical to the show time (Dice often only
+        # exposes a single "Doors open" line with no separate show start)
+        if doors == show_time:
+            doors = None
+
+        # Supports = artists minus the headliner inferred from the title
+        supports = []
+        for artist in ev.get("artists") or []:
+            if artist and artist.lower() not in name.lower():
+                supports.append(artist)
+
+        shows.append({
+            "title": name,
+            "sort_date": sort_date,
+            "venue": venue_name,
+            "url": ev.get("url") or "",
+            "price": None,
+            "sold_out": bool(ev.get("sold_out")),
+            "time": show_time,
+            "supports": supports,
+            "doors": doors,
+        })
+
+    return shows
+
+
+def scrape_zhora_darling():
+    return _scrape_dice(
+        "Zhora Darling",
+        dice_venues=["Zhora Darling"],
+        dice_promoters=["Bonnie McMurray LLC dba Zhora Darling"],
+    )
+
+
 FIRST_AVE_VENUES = {
     "First Avenue", "7th St Entry", "Palace Theatre",
     "The Fitzgerald Theater", "Fine Line", "Turf Club",
@@ -1426,6 +1547,7 @@ if __name__ == "__main__":
     shows += scrape_skyway()
     shows += scrape_pilllar()
     shows += scrape_underground()
+    shows += scrape_zhora_darling()
     shows.sort(key=lambda x: x["sort_date"])
     shows = deduplicate(shows)
     shows = filter_junk_and_sports(shows)
