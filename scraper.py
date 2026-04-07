@@ -52,6 +52,7 @@ VENUE_URLS = {
     "The Parkway Theater":    "https://theparkwaytheater.com/live-events",
     "Berlin":                 "https://www.berlinmpls.com/calendar",
     "Uptown VFW":             "https://app.opendate.io/c/uptown-vfw-681",
+    "Aster Cafe":             "https://astercafe.com/live-music-calendar/",
 }
 
 DICE_API_URL = "https://partners-endpoint.dice.fm/api/v2/events"
@@ -1325,6 +1326,95 @@ def scrape_parkway():
     )
 
 
+_ASTER_DATE_PREFIX_RE = re.compile(r"^\s*\d{1,2}/\d{1,2}\s*[-–]\s*")
+_ASTER_WEEKDAYS = [
+    "monday", "tuesday", "wednesday", "thursday",
+    "friday", "saturday", "sunday",
+]
+
+
+def scrape_aster_cafe():
+    """Aster Cafe books live music via Toast Tables. The public booking API
+    returns 'experiences' (recurring or one-off events) with a list of
+    active dates and per-weekday shift hours."""
+    print("  Fetching Aster Cafe...")
+    restaurant_guid = "e8feb07f-35e7-4478-8808-323010818c1f"
+    api_url = "https://ws.toasttab.com/booking/v1/public/experiences"
+    today = date.today()
+    start_param = today.strftime("%Y-%m-%dT00:00:00+00:00")
+    headers = {
+        **HTTP_HEADERS,
+        "Accept": "application/json",
+        "Toast-Restaurant-External-ID": restaurant_guid,
+    }
+    try:
+        resp = requests.get(
+            api_url, headers=headers,
+            params={"startDate": start_param},
+            timeout=REQUEST_TIMEOUT,
+        )
+        data = resp.json()
+    except Exception as e:
+        print(f"  Error: {e}")
+        return []
+
+    cutoff = today + relativedelta(months=MONTHS_AHEAD)
+    shows = []
+
+    for exp in data.get("results", []):
+        name = exp.get("name", "").strip()
+        if not name:
+            continue
+        # Strip a leading "M/D - " date prefix that Aster includes in many
+        # one-off event titles ("4/10 - Bob Frey & The Adaptors").
+        title = _ASTER_DATE_PREFIX_RE.sub("", name).strip()
+
+        slug = exp.get("slug")
+        url = (
+            f"https://tables.toasttab.com/aster-cafe/experiences/{slug}"
+            if slug else "https://tables.toasttab.com/aster-cafe/experiences"
+        )
+
+        shifts = exp.get("shifts") or [{}]
+        hours = (shifts[0] or {}).get("hours", {}) or {}
+
+        for d_str in exp.get("datesActive", []) or []:
+            try:
+                sort_date = datetime.strptime(d_str, "%Y-%m-%d").date()
+            except ValueError:
+                continue
+            if sort_date < today or sort_date > cutoff:
+                continue
+
+            weekday_key = _ASTER_WEEKDAYS[sort_date.weekday()]
+            day_hours = hours.get(weekday_key) or {}
+            show_time = None
+            if day_hours.get("enabled") and day_hours.get("start"):
+                try:
+                    h, m, _ = day_hours["start"].split(":")
+                    dt = datetime(
+                        sort_date.year, sort_date.month, sort_date.day,
+                        int(h), int(float(m)),
+                    )
+                    show_time = _format_local_time(dt)
+                except (ValueError, TypeError):
+                    pass
+
+            shows.append({
+                "title": title,
+                "sort_date": sort_date,
+                "venue": "Aster Cafe",
+                "url": url,
+                "price": None,
+                "sold_out": False,
+                "time": show_time,
+                "supports": [],
+                "doors": None,
+            })
+
+    return shows
+
+
 FIRST_AVE_VENUES = {
     "First Avenue", "7th St Entry", "Palace Theatre",
     "The Fitzgerald Theater", "Fine Line", "Turf Club",
@@ -1814,6 +1904,7 @@ if __name__ == "__main__":
         ("The Parkway Theater", scrape_parkway),
         ("Berlin", scrape_berlin),
         ("Uptown VFW", scrape_uptown_vfw),
+        ("Aster Cafe", scrape_aster_cafe),
     ]
 
     shows = []
