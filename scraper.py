@@ -51,6 +51,8 @@ VENUE_URLS = {
     "Zhora Darling":          "https://www.zhoradarling.com/events",
     "Cloudland Theater":      "https://www.cloudlandtheater.com/",
     "The Parkway Theater":    "https://theparkwaytheater.com/live-events",
+    "Berlin":                 "https://www.berlinmpls.com/calendar",
+    "Uptown VFW":             "https://app.opendate.io/c/uptown-vfw-681",
 }
 
 DICE_API_URL = "https://partners-endpoint.dice.fm/api/v2/events"
@@ -1082,6 +1084,168 @@ def scrape_cloudland():
     return _scrape_dice("Cloudland Theater", dice_venues=["Cloudland Theater"])
 
 
+def scrape_berlin():
+    """Berlin's calendar is a Squarespace event collection rendered as
+    eventlist articles with semantic <time> tags."""
+    url = "https://www.berlinmpls.com/calendar"
+    print("  Fetching Berlin...")
+    try:
+        response = requests.get(url, headers=HTTP_HEADERS, timeout=REQUEST_TIMEOUT)
+        soup = BeautifulSoup(response.text, "html.parser")
+    except Exception as e:
+        print(f"  Error: {e}")
+        return []
+
+    today = date.today()
+    shows = []
+    seen = set()
+
+    for ev in soup.select("article.eventlist-event--upcoming"):
+        title_a = ev.select_one(".eventlist-title a, h1 a, h2 a, h3 a")
+        date_tag = ev.select_one("time.event-date")
+        if not title_a or not date_tag:
+            continue
+
+        try:
+            sort_date = datetime.strptime(
+                date_tag.get("datetime", ""), "%Y-%m-%d"
+            ).date()
+        except ValueError:
+            continue
+        if sort_date < today:
+            continue
+
+        title = title_a.get_text(strip=True)
+        href = title_a.get("href", "")
+        if href and not href.startswith("http"):
+            href = "https://www.berlinmpls.com" + href
+
+        show_time = None
+        start_tag = ev.select_one("time.event-time-localized-start")
+        if start_tag:
+            try:
+                dt = datetime.strptime(start_tag.get_text(strip=True), "%I:%M %p")
+                show_time = _format_local_time(dt)
+            except ValueError:
+                pass
+
+        key = (title, sort_date)
+        if key in seen:
+            continue
+        seen.add(key)
+
+        shows.append({
+            "title": title,
+            "sort_date": sort_date,
+            "venue": "Berlin",
+            "url": href,
+            "price": None,
+            "sold_out": False,
+            "time": show_time,
+            "supports": [],
+            "doors": None,
+        })
+
+    return shows
+
+
+_VFW_DOORS_SHOW_RE = re.compile(
+    r"doors?\s*:\s*([0-9: ]+(?:am|pm))\s*[-–]\s*show\s*:\s*([0-9: ]+(?:am|pm))",
+    re.I,
+)
+
+
+def scrape_uptown_vfw():
+    """Uptown VFW lists events on an Opendate.io shows page that's rendered
+    server-side. Each event is a .confirm-card div."""
+    url = "https://app.opendate.io/c/uptown-vfw-681"
+    print("  Fetching Uptown VFW...")
+    try:
+        response = requests.get(url, headers=HTTP_HEADERS, timeout=REQUEST_TIMEOUT)
+        soup = BeautifulSoup(response.text, "html.parser")
+    except Exception as e:
+        print(f"  Error: {e}")
+        return []
+
+    today = date.today()
+    shows = []
+
+    for card in soup.select("div.confirm-card"):
+        link = card.select_one("a.stretched-link")
+        if not link:
+            continue
+        title = link.get_text(strip=True)
+        href = link.get("href", "")
+
+        paragraphs = card.find_all("p")
+        supports = []
+        sort_date = None
+        show_time = None
+        doors = None
+
+        for p in paragraphs:
+            text = p.get_text(" ", strip=True)
+            if not text:
+                continue
+            tl = text.lower()
+
+            if tl.startswith("with "):
+                supports_str = text[5:].strip()
+                # Strip leading "and " from final entry e.g. "X, Y, and Z"
+                acts = [a.strip() for a in re.split(r",\s*", supports_str) if a.strip()]
+                cleaned = []
+                for a in acts:
+                    if a.lower().startswith("and "):
+                        a = a[4:].strip()
+                    if a:
+                        cleaned.append(a)
+                supports = cleaned
+                continue
+
+            # Date paragraph e.g. "April 10, 2026"
+            if not sort_date:
+                try:
+                    sort_date = datetime.strptime(text, "%B %d, %Y").date()
+                    continue
+                except ValueError:
+                    pass
+
+            m = _VFW_DOORS_SHOW_RE.search(text)
+            if m:
+                doors_raw = m.group(1).replace(" ", "").lower()
+                show_raw = m.group(2).replace(" ", "").lower()
+                try:
+                    doors_dt = datetime.strptime(doors_raw, "%I:%M%p")
+                    doors = _format_local_time(doors_dt)
+                except ValueError:
+                    doors = None
+                try:
+                    show_dt = datetime.strptime(show_raw, "%I:%M%p")
+                    show_time = _format_local_time(show_dt)
+                except ValueError:
+                    show_time = None
+
+        if not sort_date or sort_date < today:
+            continue
+
+        if doors == show_time:
+            doors = None
+
+        shows.append({
+            "title": title,
+            "sort_date": sort_date,
+            "venue": "Uptown VFW",
+            "url": href,
+            "price": None,
+            "sold_out": False,
+            "time": show_time,
+            "supports": supports,
+            "doors": doors,
+        })
+
+    return shows
+
+
 def scrape_parkway():
     return _scrape_dice(
         "The Parkway Theater",
@@ -1568,6 +1732,8 @@ if __name__ == "__main__":
     shows += scrape_zhora_darling()
     shows += scrape_cloudland()
     shows += scrape_parkway()
+    shows += scrape_berlin()
+    shows += scrape_uptown_vfw()
     shows.sort(key=lambda x: x["sort_date"])
     shows = deduplicate(shows)
     shows = filter_junk_and_sports(shows)
