@@ -49,6 +49,7 @@ VENUE_URLS = {
     "Pilllar Forum":          "https://www.pilllar.com/pages/events",
     "Underground Music Venue": "https://www.undergroundmusicvenue.com/events",
     "Zhora Darling":          "https://www.zhoradarling.com/events",
+    "Cloudland Theater":      "https://www.cloudlandtheater.com/",
 }
 
 DICE_API_URL = "https://partners-endpoint.dice.fm/api/v2/events"
@@ -1072,6 +1073,10 @@ def scrape_zhora_darling():
     )
 
 
+def scrape_cloudland():
+    return _scrape_dice("Cloudland Theater", dice_venues=["Cloudland Theater"])
+
+
 FIRST_AVE_VENUES = {
     "First Avenue", "7th St Entry", "Palace Theatre",
     "The Fitzgerald Theater", "Fine Line", "Turf Club",
@@ -1548,6 +1553,7 @@ if __name__ == "__main__":
     shows += scrape_pilllar()
     shows += scrape_underground()
     shows += scrape_zhora_darling()
+    shows += scrape_cloudland()
     shows.sort(key=lambda x: x["sort_date"])
     shows = deduplicate(shows)
     shows = filter_junk_and_sports(shows)
