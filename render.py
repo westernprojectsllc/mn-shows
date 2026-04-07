@@ -76,14 +76,28 @@ def build_week_nav(all_weeks, highlight=None):
     return "\n".join(lines)
 
 
+def _venue_show_html(show):
+    """Render a show's "[venue] [title]" HTML fragment with linked venue
+    and title if URLs are available. Shared by the weekly and past views."""
+    venue_safe = escape(show.venue)
+    title_safe = escape(show.title)
+    venue_url = VENUE_URLS.get(show.venue, "")
+    if venue_url:
+        venue_html = f'<span class="venue-link"><a href="{escape(venue_url)}">{venue_safe}</a></span>'
+    else:
+        venue_html = f'<span class="venue-link">{venue_safe}</span>'
+    if show.url:
+        show_html = f'<span class="show-link"><a href="{escape(show.url)}">{title_safe}</a></span>'
+    else:
+        show_html = f'<span class="show-link">{title_safe}</span>'
+    return venue_html, show_html
+
+
 def build_day_rows(week_shows):
     """Build HTML list items for a set of shows grouped by day."""
     days = {}
     for show in week_shows:
-        day_key = show.sort_date
-        if day_key not in days:
-            days[day_key] = []
-        days[day_key].append(show)
+        days.setdefault(show.sort_date, []).append(show)
 
     rows = []
     for day_date in sorted(days.keys()):
@@ -91,26 +105,10 @@ def build_day_rows(week_shows):
         rows.append(f'<li><span>{day_label}</span>')
         rows.append('<ul class="shows">')
         for show in sorted(days[day_date], key=lambda s: s.venue):
-            venue = show.venue
-            venue_url = VENUE_URLS.get(venue, "")
-            title_safe = escape(show.title)
-            venue_safe = escape(venue)
-            show_url = show.url
+            venue_html, show_html = _venue_show_html(show)
 
-            if venue_url:
-                venue_html = f'<span class="venue-link"><a href="{escape(venue_url)}">{venue_safe}</a></span>'
-            else:
-                venue_html = f'<span class="venue-link">{venue_safe}</span>'
-
-            if show_url:
-                show_html = f'<span class="show-link"><a href="{escape(show_url)}">{title_safe}</a></span>'
-            else:
-                show_html = f'<span class="show-link">{title_safe}</span>'
-
-            # Supporting acts
-            supports = show.supports
-            if supports:
-                support_str = ", ".join(escape(s) for s in supports)
+            if show.supports:
+                support_str = ", ".join(escape(s) for s in show.supports)
                 show_html += f' <span class="supports">with {support_str}</span>'
 
             extras = []
@@ -310,28 +308,14 @@ def write_html(shows):
     # Build past page
     past_days = {}
     for show in past:
-        if show.sort_date not in past_days:
-            past_days[show.sort_date] = []
-        past_days[show.sort_date].append(show)
+        past_days.setdefault(show.sort_date, []).append(show)
 
     past_rows = []
     for day_date in sorted(past_days.keys(), reverse=True):
         day_label = day_date.strftime("%a %b %-d, %Y")
         past_rows.append(f'<li><span>{day_label}</span><ul class="shows">')
         for show in sorted(past_days[day_date], key=lambda s: s.venue):
-            venue = show.venue
-            venue_url = VENUE_URLS.get(venue, "")
-            title_safe = escape(show.title)
-            venue_safe = escape(venue)
-            show_url = show.url
-            if venue_url:
-                venue_html = f'<span class="venue-link"><a href="{escape(venue_url)}">{venue_safe}</a></span>'
-            else:
-                venue_html = f'<span class="venue-link">{venue_safe}</span>'
-            if show_url:
-                show_html = f'<span class="show-link"><a href="{escape(show_url)}">{title_safe}</a></span>'
-            else:
-                show_html = f'<span class="show-link">{title_safe}</span>'
+            venue_html, show_html = _venue_show_html(show)
             past_rows.append(f"<li>{venue_html} {show_html}</li>")
         past_rows.append("</ul></li>")
 

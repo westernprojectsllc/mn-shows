@@ -91,11 +91,8 @@ def scrape_month(start_date):
                 sort_date= sort_date,
                 venue= venue_name,
                 url= title_tag["href"],
-                price= None,
                 sold_out= sold_out,
-                time= None,
                 supports= supports,
-                doors= None,
             ))
 
     return shows
@@ -126,14 +123,17 @@ def scrape_first_avenue():
     return all_shows
 
 
-def scrape_dakota():
+def _scrape_tribe_events(base_url, venue_name):
+    """Generic WordPress "The Events Calendar" REST scraper. Dakota and
+    White Squirrel both host this plugin; only the base URL and venue
+    name differ."""
     shows = []
     page = 1
     today_str = date.today().strftime("%Y-%m-%d")
 
     while True:
-        url = f"https://www.dakotacooks.com/wp-json/tribe/events/v1/events?per_page=50&page={page}&start_date={today_str}"
-        print(f"  Fetching Dakota page {page}...")
+        url = f"{base_url}?per_page=50&page={page}&start_date={today_str}"
+        print(f"  Fetching {venue_name} page {page}...")
         try:
             response = requests.get(url, headers=HTTP_HEADERS, timeout=REQUEST_TIMEOUT)
             data = response.json()
@@ -146,40 +146,31 @@ def scrape_dakota():
             break
 
         for event in events:
-            start = event.get("start_date", "")
-            if not start:
-                continue
             try:
-                dt = datetime.strptime(start, "%Y-%m-%d %H:%M:%S")
+                dt = datetime.strptime(event.get("start_date", ""), "%Y-%m-%d %H:%M:%S")
             except ValueError:
                 continue
-            sort_date = dt.date()
-            show_time = (
-                dt.strftime("%-I:%M%p").lower().replace(":00", "")
-                if dt.hour != 0 else None
-            )
-
-            cost = event.get("cost", "")
-            price_str = cost if cost else None
-
+            show_time = _format_local_time(dt) if dt.hour != 0 else None
             shows.append(Show(
                 title= unescape(event.get("title", "Unknown")),
-                sort_date= sort_date,
-                venue= "Dakota Jazz Club",
+                sort_date= dt.date(),
+                venue= venue_name,
                 url= event.get("url", ""),
-                price= price_str,
-                sold_out= False,
                 time= show_time,
-                supports= [],
-                doors= None,
             ))
 
-        total_pages = data.get("total_pages", 1)
-        if page >= total_pages:
+        if page >= data.get("total_pages", 1):
             break
         page += 1
 
     return shows
+
+
+def scrape_dakota():
+    return _scrape_tribe_events(
+        "https://www.dakotacooks.com/wp-json/tribe/events/v1/events",
+        "Dakota Jazz Club",
+    )
 
 
 def scrape_cedar():
@@ -235,11 +226,8 @@ def scrape_cedar():
             sort_date= sort_date,
             venue= "Cedar Cultural Center",
             url= "https://www.thecedar.org" + href,
-            price= None,
             sold_out= sold_out,
             time= show_time,
-            supports= [],
-            doors= None,
         ))
 
     return shows
@@ -294,11 +282,7 @@ def scrape_orchestra():
                 sort_date= sort_date,
                 venue= "Orchestra Hall",
                 url= event_url,
-                price= None,
-                sold_out= False,
                 time= show_time,
-                supports= [],
-                doors= None,
             ))
 
     return shows
@@ -354,18 +338,6 @@ def scrape_ticketmaster(api_key):
                 if not event_url:
                     continue
 
-                # Price
-                price_str = None
-                price_ranges = event.get("priceRanges", [])
-                if price_ranges:
-                    pr = price_ranges[0]
-                    low = pr.get("min")
-                    high = pr.get("max")
-                    if low is not None and high is not None and abs(high - low) > 1:
-                        price_str = f"${low:.0f}-${high:.0f}"
-                    elif low is not None:
-                        price_str = f"${low:.0f}"
-
                 # Sold out
                 status_code = event.get("dates", {}).get("status", {}).get("code", "")
                 sold_out = status_code == "offsale"
@@ -391,11 +363,9 @@ def scrape_ticketmaster(api_key):
                     sort_date= sort_date,
                     venue= venue_name,
                     url= event_url,
-                    price= price_str,
                     sold_out= sold_out,
                     time= show_time,
                     supports= supports,
-                    doors= None,
                 ))
 
             page_info = data.get("page", {})
@@ -456,10 +426,8 @@ def scrape_myth():
                 sort_date= sort_date,
                 venue= "Myth Live",
                 url= link["href"],
-                price= None,
                 sold_out= sold_out,
                 time= show_time,
-                supports= [],
                 doors= doors,
             ))
 
@@ -467,59 +435,10 @@ def scrape_myth():
 
 
 def scrape_white_squirrel():
-    shows = []
-    page = 1
-    today_str = date.today().strftime("%Y-%m-%d")
-
-    while True:
-        url = (
-            f"https://whitesquirrelbar.com/wp-json/tribe/events/v1/events"
-            f"?per_page=50&page={page}&start_date={today_str}"
-        )
-        print(f"  Fetching White Squirrel page {page}...")
-        try:
-            response = requests.get(url, headers=HTTP_HEADERS, timeout=REQUEST_TIMEOUT)
-            data = response.json()
-        except Exception as e:
-            print(f"  Error: {e}")
-            break
-
-        events = data.get("events", [])
-        if not events:
-            break
-
-        for event in events:
-            start = event.get("start_date", "")
-            if not start:
-                continue
-            try:
-                dt = datetime.strptime(start, "%Y-%m-%d %H:%M:%S")
-            except ValueError:
-                continue
-            sort_date = dt.date()
-            show_time = (
-                dt.strftime("%-I:%M%p").lower().replace(":00", "")
-                if dt.hour != 0 else None
-            )
-
-            cost = event.get("cost", "")
-            shows.append(Show(
-                title= unescape(event.get("title", "Unknown")),
-                sort_date= sort_date,
-                venue= "White Squirrel",
-                url= event.get("url", ""),
-                price= cost if cost else None,
-                sold_out= False,
-                time= show_time,
-                supports= [],
-                doors= None,
-            ))
-
-        if page >= data.get("total_pages", 1):
-            break
-        page += 1
-
-    return shows
+    return _scrape_tribe_events(
+        "https://whitesquirrelbar.com/wp-json/tribe/events/v1/events",
+        "White Squirrel",
+    )
 
 
 def scrape_icehouse():
@@ -568,18 +487,6 @@ def scrape_icehouse():
 
         show_time = _format_local_time(dt_local)
 
-        prices = show.get("price_per_person", [])
-        price_str = None
-        if prices:
-            try:
-                vals = sorted(set(float(p) for p in prices if p))
-                if len(vals) >= 2 and abs(vals[-1] - vals[0]) > 1:
-                    price_str = f"${vals[0]:.0f}-${vals[-1]:.0f}"
-                elif vals:
-                    price_str = f"${vals[0]:.0f}"
-            except (ValueError, TypeError):
-                pass
-
         show_url = (
             f"https://icehouse.turntabletickets.com/shows/{show_id}/"
             if show_id else url
@@ -590,11 +497,8 @@ def scrape_icehouse():
             sort_date= sort_date,
             venue= "Ice House",
             url= show_url,
-            price= price_str,
             sold_out= bool(perf.get("sold")),
             time= show_time,
-            supports= [],
-            doors= None,
         ))
 
     return shows
@@ -712,11 +616,8 @@ def scrape_331():
                 sort_date= sort_date,
                 venue= "331 Club",
                 url= href,
-                price= None,
-                sold_out= False,
                 time= show_time,
                 supports= supports,
-                doors= None,
             ))
 
     return shows
@@ -799,11 +700,8 @@ def scrape_skyway():
             sort_date= sort_date,
             venue= venue_name,
             url= permalink,
-            price= None,
             sold_out= sold_out,
             time= show_time,
-            supports= [],
-            doors= None,
         ))
 
     return shows
@@ -907,7 +805,6 @@ def scrape_pilllar():
             sort_date= sort_date,
             venue= "Pilllar Forum",
             url= f"https://www.pilllar.com/products/{handle}",
-            price= None,
             sold_out= not product.get("variants", [{}])[0].get("available", True),
             time= show_time,
             supports= supports,
@@ -975,11 +872,6 @@ def scrape_underground():
             sort_date= sort_date,
             venue= "Underground Music Venue",
             url= href,
-            price= None,
-            sold_out= False,
-            time= None,
-            supports= [],
-            doors= None,
         )
 
     shows = []
@@ -1012,21 +904,6 @@ def _parse_loose_time(s):
         except ValueError:
             continue
     return None
-
-
-def _parse_dice_time_str(s):
-    """Parse a Dice lineup time like '7:00 PM' into '7pm'/'7:30pm'."""
-    if not s:
-        return None
-    s = s.strip()
-    try:
-        dt = datetime.strptime(s, "%I:%M %p")
-    except ValueError:
-        try:
-            dt = datetime.strptime(s, "%I %p")
-        except ValueError:
-            return None
-    return _format_local_time(dt)
 
 
 def _scrape_dice(venue_name, dice_venues, dice_promoters=None, exclude_tags=None):
@@ -1084,9 +961,9 @@ def _scrape_dice(venue_name, dice_venues, dice_promoters=None, exclude_tags=None
             if not t:
                 continue
             if "door" in label:
-                doors = _parse_dice_time_str(t)
+                doors = _parse_loose_time(t)
             elif "show" in label and not show_time:
-                show_time = _parse_dice_time_str(t)
+                show_time = _parse_loose_time(t)
 
         # Fall back to the event start time
         if not show_time:
@@ -1108,7 +985,6 @@ def _scrape_dice(venue_name, dice_venues, dice_promoters=None, exclude_tags=None
             sort_date= sort_date,
             venue= venue_name,
             url= ev.get("url") or "",
-            price= None,
             sold_out= bool(ev.get("sold_out")),
             time= show_time,
             supports= supports,
@@ -1196,11 +1072,8 @@ def scrape_berlin():
             sort_date= sort_date,
             venue= "Berlin",
             url= href,
-            price= None,
             sold_out= sold_out,
             time= show_time,
-            supports= [],
-            doors= None,
         ))
 
     return shows
@@ -1293,8 +1166,6 @@ def scrape_uptown_vfw():
             sort_date= sort_date,
             venue= "Uptown VFW",
             url= href,
-            price= None,
-            sold_out= False,
             time= show_time,
             supports= supports,
             doors= doors,
@@ -1388,11 +1259,7 @@ def scrape_aster_cafe():
                 sort_date= sort_date,
                 venue= "Aster Cafe",
                 url= url,
-                price= None,
-                sold_out= False,
                 time= show_time,
-                supports= [],
-                doors= None,
             ))
 
     return shows
@@ -1467,33 +1334,50 @@ def enrich_show_details(shows, max_workers=16):
     return shows
 
 
+_WS_RE = re.compile(r"\s+")
+_NORM_DROP_RE = re.compile(r"[^\w\s]")
+_FA_PRESENTS_RE = re.compile(r"^first ave(nue)? presents ")
+
+
 def _normalize_title(title):
-    """Strip promoter prefixes that some sources prepend so the same show
-    scraped from two venues collapses to a single dedupe key."""
-    t = title.lower().strip()
-    for prefix in ("first avenue presents ", "first ave presents "):
-        if t.startswith(prefix):
-            t = t[len(prefix):]
-            break
-    return t
+    """Lowercased, depunctuated, whitespace-collapsed title for dedupe."""
+    t = _NORM_DROP_RE.sub(" ", title.lower().replace("\xa0", " "))
+    return _WS_RE.sub(" ", _FA_PRESENTS_RE.sub("", t)).strip()
+
+
+def _score(s):
+    # Prefer the most enriched record; longer title breaks ties.
+    return (bool(s.time), bool(s.doors), len(s.supports or []), len(s.title))
 
 
 def deduplicate(shows):
-    # First pass: exact dedupe by (date, normalized title, venue).
+    # Exact dedupe by (date, normalized title, venue).
     seen = {}
-    for show in shows:
-        key = (show.sort_date, _normalize_title(show.title), show.venue)
-        existing = seen.get(key)
-        if existing is None:
-            seen[key] = show
-            continue
-        # Prefer the more enriched record (has time/doors). Falls back to
-        # the first one seen if neither has extras.
-        existing_score = bool(existing.time) + bool(existing.doors)
-        new_score = bool(show.time) + bool(show.doors)
-        if new_score > existing_score:
-            seen[key] = show
-    return list(seen.values())
+    for s in shows:
+        key = (s.sort_date, _normalize_title(s.title), s.venue)
+        if key not in seen or _score(s) > _score(seen[key]):
+            seen[key] = s
+    shows = list(seen.values())
+
+    # Substring dedupe at same (date, venue): collapse "X" vs "X - Tour"
+    # unless both carry explicit times that differ (early/late shows).
+    by_dv = {}
+    for i, s in enumerate(shows):
+        by_dv.setdefault((s.sort_date, s.venue), []).append(i)
+    drop = set()
+    for idxs in by_dv.values():
+        for i in idxs:
+            for j in idxs:
+                if i == j or i in drop or j in drop:
+                    continue
+                a, b = shows[i], shows[j]
+                an, bn = _normalize_title(a.title), _normalize_title(b.title)
+                if an == bn or (an not in bn and bn not in an):
+                    continue
+                if a.time and b.time and a.time != b.time:
+                    continue
+                drop.add(j if _score(a) >= _score(b) else i)
+    return [s for i, s in enumerate(shows) if i not in drop]
 
 
 SPORTS_KEYWORDS = [
@@ -1512,6 +1396,7 @@ JUNK_KEYWORDS = [
     "vip upgrade", "fast lane", "locker rental", "merchandise",
     "gift card", "donation", "membership", "season ticket",
     "premium seat", "club access", "hospitality",
+    "pre-show upgrade", "pre-show upsell",
 ]
 
 SPORTS_VENUES = ["Target Center", "U.S. Bank Stadium"]
@@ -1569,6 +1454,8 @@ if __name__ == "__main__":
                 print(f"  [{name}] FAILED: {e}")
 
     shows.sort(key=lambda x: x.sort_date)
+    for s in shows:
+        s.title = _WS_RE.sub(" ", s.title.replace("\xa0", " ")).strip()
     shows = deduplicate(shows)
     shows = filter_junk_and_sports(shows)
     shows = enrich_show_details(shows)

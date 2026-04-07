@@ -61,27 +61,23 @@ class Show:
     sort_date: date
     venue: str
     url: str = ""
-    price: Optional[str] = None
     sold_out: bool = False
     time: Optional[str] = None
     doors: Optional[str] = None
     supports: List[str] = field(default_factory=list)
 
     def to_json_dict(self) -> dict:
-        """Serializable dict — converts date to ISO string."""
         d = asdict(self)
         d["sort_date"] = self.sort_date.isoformat()
         return d
 
     @classmethod
     def from_json_dict(cls, d: dict) -> "Show":
-        """Inverse of to_json_dict — parses ISO string back to date."""
         return cls(
             title=d["title"],
             sort_date=date.fromisoformat(d["sort_date"]),
             venue=d["venue"],
             url=d.get("url", ""),
-            price=d.get("price"),
             sold_out=bool(d.get("sold_out", False)),
             time=d.get("time"),
             doors=d.get("doors"),
