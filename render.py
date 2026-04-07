@@ -7,11 +7,21 @@ a scrape to rebuild only the HTML.
 
 import json
 import sys
+import urllib.parse
 from datetime import datetime, date, timedelta
 from html import escape
+from pathlib import Path
 from dateutil.relativedelta import relativedelta
 
 from models import Show, MONTHS_AHEAD, VENUE_URLS
+
+# Inline the favicon as a data URI so it works over file:// in browsers
+# (notably Safari) that don't reliably fetch sibling SVG favicons locally.
+_FAVICON_SVG = (Path(__file__).parent / "favicon.svg").read_text()
+FAVICON_TAG = (
+    f'<link rel="icon" type="image/svg+xml" '
+    f'href="data:image/svg+xml,{urllib.parse.quote(_FAVICON_SVG)}">'
+)
 
 SHOWS_JSON = "shows.json"
 
@@ -51,7 +61,7 @@ PAGE_STYLE = """
 def build_week_nav(all_weeks, highlight=None):
     """Build week navigation HTML grouped by month, one line per month."""
     months = {}
-    for wdate, wlabel in all_weeks:
+    for wdate, wlabel, _short in all_weeks:
         month_key = wdate.strftime("%B %Y")
         if month_key not in months:
             months[month_key] = []
@@ -121,7 +131,7 @@ def build_day_rows(week_shows):
     return rows
 
 
-def build_week_html(week_shows, week_label, updated, all_weeks):
+def build_week_html(week_shows, week_label, updated, all_weeks, short_label):
     rows = build_day_rows(week_shows)
     week_nav_html = build_week_nav(all_weeks, highlight=week_label)
 
@@ -129,11 +139,12 @@ def build_week_html(week_shows, week_label, updated, all_weeks):
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Minnesota Show List — {week_label}</title>
+  <title>MN GIG LIST - {short_label}</title>
+  {FAVICON_TAG}
   <style>{PAGE_STYLE}</style>
 </head>
 <body>
-  <h1><a href="index.html">Minnesota Show List</a></h1>
+  <h1><a href="index.html">Minnesota Gig List</a></h1>
   <p class="subtitle">Updated: {updated}</p>
   <nav><a href="list.html">List View</a> | <a href="past.html">Past Shows</a></nav>
   <div class="week-nav">{week_nav_html}</div>
@@ -201,13 +212,14 @@ def write_table_html(upcoming, past, updated):
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Minnesota Show List</title>
+  <title>MN GIG LIST</title>
+  {FAVICON_TAG}
   <style>
 {TABLE_STYLE}
   </style>
 </head>
 <body>
-  <h1>Minnesota Show List</h1>
+  <h1>Minnesota Gig List</h1>
   <p class="subtitle">Updated: {updated} &mdash; {len(upcoming)} upcoming shows across Minnesota</p>
   <nav>
     <a href="past.html">Past Shows ({len(past)})</a>
@@ -250,12 +262,13 @@ def write_html(shows):
             continue
         sunday = monday + timedelta(days=6)
         label = f"{monday.strftime('%b %-d')} - {sunday.strftime('%b %-d')}"
-        all_weeks.append((monday, label))
+        short_label = f"{monday.strftime('%-m/%-d')} to {sunday.strftime('%-m/%-d')}"
+        all_weeks.append((monday, label, short_label))
 
     # Write each week page
-    for monday, label in all_weeks:
+    for monday, label, short_label in all_weeks:
         week_shows = weeks[monday]
-        html = build_week_html(week_shows, label, updated, all_weeks)
+        html = build_week_html(week_shows, label, updated, all_weeks, short_label)
         fname = f"week-{monday.strftime('%Y-%m-%d')}.html"
         with open(fname, "w") as f:
             f.write(html)
@@ -277,11 +290,12 @@ def write_html(shows):
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Minnesota Show List</title>
+  <title>MINNESOTA GIG LIST</title>
+  {FAVICON_TAG}
   <style>{PAGE_STYLE}</style>
 </head>
 <body>
-  <h1>Minnesota Show List</h1>
+  <h1>Minnesota Gig List</h1>
   <p class="subtitle">Updated: {updated} &mdash; {len(upcoming)} upcoming shows &mdash; <a href="past.html">Past Shows ({len(past)})</a></p>
   <nav><a href="list.html">List View</a></nav>
   <h2>Concerts By Week</h2>
@@ -325,11 +339,12 @@ def write_html(shows):
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Minnesota Show List - Past</title>
+  <title>MN GIG LIST - PAST</title>
+  {FAVICON_TAG}
   <style>{PAGE_STYLE}</style>
 </head>
 <body>
-  <h1><a href="index.html">Minnesota Show List</a> — Past Shows</h1>
+  <h1><a href="index.html">Minnesota Gig List</a> — Past Shows</h1>
   <p class="subtitle">Updated: {updated} &mdash; {len(past)} past shows</p>
   <nav><a href="index.html">← Upcoming Shows</a></nav>
   <ul class="days">
@@ -349,7 +364,7 @@ def write_html(shows):
         f'  <url><loc>{base_url}/list.html</loc><lastmod>{today_str}</lastmod><changefreq>daily</changefreq></url>',
         f'  <url><loc>{base_url}/past.html</loc><lastmod>{today_str}</lastmod><changefreq>daily</changefreq></url>',
     ]
-    for monday, label in all_weeks:
+    for monday, label, _short in all_weeks:
         fname = f"week-{monday.strftime('%Y-%m-%d')}.html"
         sitemap_urls.append(f'  <url><loc>{base_url}/{fname}</loc><lastmod>{today_str}</lastmod><changefreq>daily</changefreq></url>')
 

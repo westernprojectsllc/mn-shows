@@ -3,7 +3,7 @@ import re
 import json
 import requests
 from bs4 import BeautifulSoup
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import partial
 from datetime import datetime, date, timedelta
 from dateutil.relativedelta import relativedelta
@@ -32,7 +32,10 @@ def scrape_month(start_date):
     soup = BeautifulSoup(response.text, "html.parser")
 
     shows = []
-    year = start_date.year
+    # First Ave's monthly listing can spill into the next calendar year
+    # (e.g. a December page showing early January shows). Anchor on the
+    # requested month and bump the year for any event whose month is
+    # earlier than start_date's month.
     for event in soup.select(".show_list_item"):
         title_tag = event.select_one("h4 a")
         month = event.select_one(".month")
@@ -43,9 +46,12 @@ def scrape_month(start_date):
             month_str = month.get_text(strip=True)
             day_str = day.get_text(strip=True)
             try:
-                sort_date = datetime.strptime(f"{month_str} {day_str} {year}", "%b %d %Y").date()
+                parsed = datetime.strptime(f"{month_str} {day_str} {start_date.year}", "%b %d %Y").date()
             except ValueError:
                 continue
+            if parsed.month < start_date.month:
+                parsed = parsed.replace(year=start_date.year + 1)
+            sort_date = parsed
 
             # Supporting acts from <h5> tag
             supports = []
@@ -69,8 +75,16 @@ def scrape_month(start_date):
                     break
 
             venue_name = venue.get_text(strip=True) if venue else "First Avenue"
-            # Normalize First Ave family venue names to match VENUE_URLS keys
-            venue_name = {"Armory": "The Armory"}.get(venue_name, venue_name)
+            # Normalize venue names to match the canonical spelling used by
+            # the dedicated venue scrapers (and VENUE_URLS keys). First Ave
+            # cross-promotes shows at non-First-Ave venues like Cedar and
+            # Ice House under inconsistent names — fold them in here so the
+            # deduper can collapse them against the dedicated scrapers.
+            venue_name = {
+                "Armory": "The Armory",
+                "The Cedar Cultural Center": "Cedar Cultural Center",
+                "icehouse MPLS": "Ice House",
+            }.get(venue_name, venue_name)
 
             shows.append(Show(
                 title= title_tag.get_text(separator=" ", strip=True),
@@ -347,9 +361,9 @@ def scrape_ticketmaster(api_key):
                     pr = price_ranges[0]
                     low = pr.get("min")
                     high = pr.get("max")
-                    if low and high and abs(high - low) > 1:
+                    if low is not None and high is not None and abs(high - low) > 1:
                         price_str = f"${low:.0f}-${high:.0f}"
-                    elif low:
+                    elif low is not None:
                         price_str = f"${low:.0f}"
 
                 # Sold out
@@ -926,38 +940,37 @@ def scrape_underground():
         return []
 
     today = date.today()
-    shows = []
 
-    for event_id in event_ids:
+    def fetch_event(event_id):
         embed_url = f"https://promoter.skeletix.com/events/{event_id}/embed"
         try:
             r = requests.get(embed_url, headers=HTTP_HEADERS, timeout=REQUEST_TIMEOUT)
             soup = BeautifulSoup(r.text, "html.parser")
         except Exception:
-            continue
+            return None
 
         title_tag = soup.select_one(".card-title")
         desc_tag = soup.select_one(".card-desc")
         link_tag = soup.select_one("a.card")
         if not title_tag or not desc_tag:
-            continue
+            return None
 
         title = title_tag.get_text(strip=True)
         desc = desc_tag.get_text(" ", strip=True)
         m = _UNDERGROUND_DATE_RE.search(desc)
         if not m:
-            continue
+            return None
         try:
             sort_date = datetime.strptime(
                 f"{m.group(1)} {m.group(2)} {m.group(3)}", "%b %d %Y"
             ).date()
         except ValueError:
-            continue
+            return None
         if sort_date < today:
-            continue
+            return None
 
         href = link_tag["href"] if link_tag and link_tag.get("href") else embed_url
-        shows.append(Show(
+        return Show(
             title= title,
             sort_date= sort_date,
             venue= "Underground Music Venue",
@@ -967,7 +980,13 @@ def scrape_underground():
             time= None,
             supports= [],
             doors= None,
-        ))
+        )
+
+    shows = []
+    with ThreadPoolExecutor(max_workers=min(8, len(event_ids))) as executor:
+        for show in executor.map(fetch_event, event_ids):
+            if show is not None:
+                shows.append(show)
 
     return shows
 
@@ -1394,7 +1413,6 @@ def _enrich_one(session, show):
     if not url.startswith("http"):
         url = "https://first-avenue.com" + url
 
-    soup = None
     for attempt in range(2):
         try:
             resp = session.get(url, headers=HTTP_HEADERS, timeout=REQUEST_TIMEOUT)
@@ -1403,8 +1421,6 @@ def _enrich_one(session, show):
         except Exception:
             if attempt == 1:
                 return
-    if soup is None:
-        return
 
     for h6 in soup.find_all("h6"):
         label = h6.get_text(strip=True).lower()
@@ -1451,15 +1467,33 @@ def enrich_show_details(shows, max_workers=16):
     return shows
 
 
+def _normalize_title(title):
+    """Strip promoter prefixes that some sources prepend so the same show
+    scraped from two venues collapses to a single dedupe key."""
+    t = title.lower().strip()
+    for prefix in ("first avenue presents ", "first ave presents "):
+        if t.startswith(prefix):
+            t = t[len(prefix):]
+            break
+    return t
+
+
 def deduplicate(shows):
-    seen = set()
-    unique = []
+    # First pass: exact dedupe by (date, normalized title, venue).
+    seen = {}
     for show in shows:
-        key = (show.sort_date, show.title.lower(), show.venue)
-        if key not in seen:
-            seen.add(key)
-            unique.append(show)
-    return unique
+        key = (show.sort_date, _normalize_title(show.title), show.venue)
+        existing = seen.get(key)
+        if existing is None:
+            seen[key] = show
+            continue
+        # Prefer the more enriched record (has time/doors). Falls back to
+        # the first one seen if neither has extras.
+        existing_score = bool(existing.time) + bool(existing.doors)
+        new_score = bool(show.time) + bool(show.doors)
+        if new_score > existing_score:
+            seen[key] = show
+    return list(seen.values())
 
 
 SPORTS_KEYWORDS = [
@@ -1525,7 +1559,7 @@ if __name__ == "__main__":
     shows = []
     with ThreadPoolExecutor(max_workers=len(scrapers)) as executor:
         futures = {executor.submit(fn): name for name, fn in scrapers}
-        for future in futures:
+        for future in as_completed(futures):
             name = futures[future]
             try:
                 result = future.result()
