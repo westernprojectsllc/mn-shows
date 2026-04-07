@@ -46,6 +46,8 @@ VENUE_URLS = {
     "331 Club":               "https://331club.com/",
     "Skyway Theatre":         "https://skywaytheatre.com/",
     "The Loft at Skyway Theatre": "https://skywaytheatre.com/",
+    "Pilllar Forum":          "https://www.pilllar.com/pages/events",
+    "Underground Music Venue": "https://www.undergroundmusicvenue.com/events",
 }
 
 
@@ -772,6 +774,183 @@ def scrape_skyway():
     return shows
 
 
+_PILLLAR_DATE_RE = re.compile(r"(\d{1,2})/(\d{1,2})/(\d{4})")
+_PILLLAR_TIME_RE = re.compile(
+    r"music[^0-9]*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?",
+    re.I,
+)
+_PILLLAR_DOORS_RE = re.compile(
+    r"doors[^0-9]*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?",
+    re.I,
+)
+
+
+def _format_pilllar_time(hour, minute, ampm):
+    """Format an hour/minute/ampm tuple as e.g. '6:30pm'. Pilllar listings
+    are evening shows, so default to pm when am/pm is missing."""
+    hour = int(hour)
+    minute = int(minute) if minute else 0
+    if ampm:
+        ampm = ampm.lower()
+    else:
+        # Default: 1-7 -> pm, 8-11 -> pm, 12 -> pm. Effectively always pm.
+        ampm = "pm"
+    if minute:
+        return f"{hour}:{minute:02d}{ampm}"
+    return f"{hour}{ampm}"
+
+
+def scrape_pilllar():
+    """Pilllar Forum sells tickets through a Shopify products.json endpoint.
+    Each product is one show; the title contains the artist + date and the
+    body_html has structured Date/Time/Lineup fields."""
+    url = "https://www.pilllar.com/collections/tickets/products.json?limit=250"
+    print("  Fetching Pilllar Forum...")
+    try:
+        response = requests.get(url, headers=HTTP_HEADERS, timeout=REQUEST_TIMEOUT)
+        data = response.json()
+    except Exception as e:
+        print(f"  Error: {e}")
+        return []
+
+    today = date.today()
+    shows = []
+
+    for product in data.get("products", []):
+        title = product.get("title", "").strip()
+        handle = product.get("handle", "")
+        body = product.get("body_html", "") or ""
+
+        # Strip leading "Music:" prefix
+        clean_title = re.sub(r"^\s*music\s*:\s*", "", title, flags=re.I)
+        # Extract date from title (M/D/YYYY)
+        m = _PILLLAR_DATE_RE.search(clean_title)
+        if not m:
+            continue
+        try:
+            sort_date = date(int(m.group(3)), int(m.group(1)), int(m.group(2)))
+        except ValueError:
+            continue
+        if sort_date < today:
+            continue
+
+        # Remove date from title to get artist name
+        artist = _PILLLAR_DATE_RE.sub("", clean_title).strip(" -–—")
+
+        # Parse times and lineup from body_html
+        body_soup = BeautifulSoup(body, "html.parser")
+        body_text = body_soup.get_text(" ", strip=True)
+
+        show_time = None
+        doors = None
+        tm = _PILLLAR_TIME_RE.search(body_text)
+        if tm:
+            show_time = _format_pilllar_time(tm.group(1), tm.group(2), tm.group(3))
+        dm = _PILLLAR_DOORS_RE.search(body_text)
+        if dm:
+            doors = _format_pilllar_time(dm.group(1), dm.group(2), dm.group(3))
+
+        supports = []
+        lineup_match = re.search(
+            r"lineup\s*:\s*(.+?)(?=\s+(?:time|date|cost|doors|all\s+ages|tickets|please)\s*:|$)",
+            body_text,
+            re.I,
+        )
+        if lineup_match:
+            acts = []
+            for a in lineup_match.group(1).split(","):
+                a = a.strip()
+                if a.lower().startswith("and "):
+                    a = a[4:].strip()
+                if a:
+                    acts.append(a)
+            # Drop the headliner from the lineup (it can appear first or last)
+            supports = [a for a in acts if a.lower() != artist.lower()]
+
+        shows.append({
+            "title": artist,
+            "sort_date": sort_date,
+            "venue": "Pilllar Forum",
+            "url": f"https://www.pilllar.com/products/{handle}",
+            "price": None,
+            "sold_out": not product.get("variants", [{}])[0].get("available", True),
+            "time": show_time,
+            "supports": supports,
+            "doors": doors,
+        })
+
+    return shows
+
+
+_UNDERGROUND_EMBED_RE = re.compile(r"promoter\.skeletix\.com/events/(\d+)")
+_UNDERGROUND_DATE_RE = re.compile(
+    r"(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),\s+([A-Z][a-z]{2})\s+(\d{1,2}),\s+(\d{4})"
+)
+
+
+def scrape_underground():
+    """Underground Music Venue's site embeds Skeletix iframes for each show.
+    We pull the embed URLs from the events page, then fetch each embed for
+    the title and date. Skeletix doesn't expose show times in the embed."""
+    url = "https://www.undergroundmusicvenue.com/events"
+    print("  Fetching Underground Music Venue...")
+    try:
+        response = requests.get(url, headers=HTTP_HEADERS, timeout=REQUEST_TIMEOUT)
+    except Exception as e:
+        print(f"  Error: {e}")
+        return []
+
+    event_ids = sorted(set(_UNDERGROUND_EMBED_RE.findall(response.text)))
+    if not event_ids:
+        return []
+
+    today = date.today()
+    shows = []
+
+    for event_id in event_ids:
+        embed_url = f"https://promoter.skeletix.com/events/{event_id}/embed"
+        try:
+            r = requests.get(embed_url, headers=HTTP_HEADERS, timeout=REQUEST_TIMEOUT)
+            soup = BeautifulSoup(r.text, "html.parser")
+        except Exception:
+            continue
+
+        title_tag = soup.select_one(".card-title")
+        desc_tag = soup.select_one(".card-desc")
+        link_tag = soup.select_one("a.card")
+        if not title_tag or not desc_tag:
+            continue
+
+        title = title_tag.get_text(strip=True)
+        desc = desc_tag.get_text(" ", strip=True)
+        m = _UNDERGROUND_DATE_RE.search(desc)
+        if not m:
+            continue
+        try:
+            sort_date = datetime.strptime(
+                f"{m.group(1)} {m.group(2)} {m.group(3)}", "%b %d %Y"
+            ).date()
+        except ValueError:
+            continue
+        if sort_date < today:
+            continue
+
+        href = link_tag["href"] if link_tag and link_tag.get("href") else embed_url
+        shows.append({
+            "title": title,
+            "sort_date": sort_date,
+            "venue": "Underground Music Venue",
+            "url": href,
+            "price": None,
+            "sold_out": False,
+            "time": None,
+            "supports": [],
+            "doors": None,
+        })
+
+    return shows
+
+
 FIRST_AVE_VENUES = {
     "First Avenue", "7th St Entry", "Palace Theatre",
     "The Fitzgerald Theater", "Fine Line", "Turf Club",
@@ -1245,6 +1424,8 @@ if __name__ == "__main__":
     shows += scrape_icehouse()
     shows += scrape_331()
     shows += scrape_skyway()
+    shows += scrape_pilllar()
+    shows += scrape_underground()
     shows.sort(key=lambda x: x["sort_date"])
     shows = deduplicate(shows)
     shows = filter_junk_and_sports(shows)
