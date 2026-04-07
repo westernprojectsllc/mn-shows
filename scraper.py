@@ -93,13 +93,21 @@ def scrape_month(start_date):
                 if support_text:
                     supports = [s.strip() for s in support_text.replace(" and ", ", ").split(",") if s.strip()]
 
+            # Sold-out badge: First Ave reuses .badge-sold-out for cancelled
+            # shows, so detect by the literal span text instead of class.
+            sold_out = False
+            for badge in event.select(".status.badge span, .badge span"):
+                if badge.get_text(strip=True).lower() == "sold out":
+                    sold_out = True
+                    break
+
             shows.append({
                 "title": title_tag.get_text(separator=" ", strip=True),
                 "sort_date": sort_date,
                 "venue": venue.get_text(strip=True) if venue else "First Avenue",
                 "url": title_tag["href"],
                 "price": None,
-                "sold_out": False,
+                "sold_out": sold_out,
                 "time": None,
                 "supports": supports,
                 "doors": None,
@@ -231,13 +239,19 @@ def scrape_cedar():
             except ValueError:
                 pass
 
+        title = a_tag.get_text(separator=" ", strip=True)
+        # Cedar marks sold-out shows with a ❗SOLD OUT❗ prefix in the title.
+        sold_out = bool(re.search(r"sold\s*out", title, re.I))
+        if sold_out:
+            title = re.sub(r"❗?\s*sold\s*out\s*❗?", "", title, flags=re.I).strip()
+
         shows.append({
-            "title": a_tag.get_text(separator=" ", strip=True),
+            "title": title,
             "sort_date": sort_date,
             "venue": "Cedar Cultural Center",
             "url": "https://www.thecedar.org" + href,
             "price": None,
-            "sold_out": False,
+            "sold_out": sold_out,
             "time": show_time,
             "supports": [],
             "doors": None,
@@ -433,13 +447,18 @@ def scrape_myth():
             except ValueError:
                 continue
 
+            # RHP Events plugin tags each show's CTA element with a status
+            # class: on-sale, sold-out, off-sale, Canceled, coming-soon, etc.
+            cta = event.select_one(".rhp-event-cta")
+            sold_out = bool(cta and "sold-out" in cta.get("class", []))
+
             shows.append({
                 "title": link.get("title", "Unknown"),
                 "sort_date": sort_date,
                 "venue": "Myth Live",
                 "url": link["href"],
                 "price": None,
-                "sold_out": False,
+                "sold_out": sold_out,
                 "time": None,
                 "supports": [],
                 "doors": None,
@@ -573,7 +592,7 @@ def scrape_icehouse():
             "venue": "Ice House",
             "url": show_url,
             "price": price_str,
-            "sold_out": False,
+            "sold_out": bool(perf.get("sold")),
             "time": show_time,
             "supports": [],
             "doors": None,
@@ -764,6 +783,8 @@ def scrape_skyway():
         else:
             venue_name = "Skyway Theatre"
 
+        sold_out = "sold out" in details_lower
+
         show_time = _format_local_time(dt)
 
         # Unescape HTML entities in title
@@ -780,7 +801,7 @@ def scrape_skyway():
             "venue": venue_name,
             "url": permalink,
             "price": None,
-            "sold_out": False,
+            "sold_out": sold_out,
             "time": show_time,
             "supports": [],
             "doors": None,
@@ -1127,6 +1148,13 @@ def scrape_berlin():
         if href and not href.startswith("http"):
             href = "https://www.berlinmpls.com" + href
 
+        # Detect sold-out marker in title (matches the Squarespace convention
+        # used by Cedar; Berlin shows haven't been seen with this yet but the
+        # markup pattern is identical).
+        sold_out = bool(re.search(r"sold\s*out", title, re.I))
+        if sold_out:
+            title = re.sub(r"❗?\s*sold\s*out\s*❗?", "", title, flags=re.I).strip()
+
         # Single-day events use .event-time-localized-start; multi-day events
         # use plain .event-time-localized (first one is the start time).
         show_time = None
@@ -1151,7 +1179,7 @@ def scrape_berlin():
             "venue": "Berlin",
             "url": href,
             "price": None,
-            "sold_out": False,
+            "sold_out": sold_out,
             "time": show_time,
             "supports": [],
             "doors": None,
