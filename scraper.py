@@ -28,7 +28,6 @@ VENUE_URLS = {
     "Turf Club":              "https://first-avenue.com/venue/turf-club/",
     "Amsterdam Bar & Hall":   "https://www.amsterdambar.com/",
     "The Armory":             "https://armorymn.com/",
-    "The Cedar Cultural Center": "https://www.thecedar.org",
     "Cedar Cultural Center":  "https://www.thecedar.org",
     "Dakota Jazz Club":       "https://www.dakotacooks.com",
     "Orchestra Hall":         "https://www.minnesotaorchestra.org",
@@ -113,19 +112,23 @@ def scrape_first_avenue():
     all_shows = []
     seen_urls = set()
     start_month = datetime.today().replace(day=1)
+    months = [start_month + relativedelta(months=i) for i in range(MONTHS_AHEAD)]
 
-    for i in range(MONTHS_AHEAD):
-        month = start_month + relativedelta(months=i)
-        print(f"Scraping {month.strftime('%B %Y')}...")
+    print(f"Scraping First Avenue ({MONTHS_AHEAD} months in parallel)...")
+
+    def fetch(month):
         try:
-            shows = scrape_month(month)
+            return scrape_month(month)
         except Exception as e:
-            print(f"  Error: {e}")
-            continue
-        for show in shows:
-            if show["url"] not in seen_urls:
-                seen_urls.add(show["url"])
-                all_shows.append(show)
+            print(f"  Error scraping {month.strftime('%B %Y')}: {e}")
+            return []
+
+    with ThreadPoolExecutor(max_workers=MONTHS_AHEAD) as executor:
+        for shows in executor.map(fetch, months):
+            for show in shows:
+                if show["url"] not in seen_urls:
+                    seen_urls.add(show["url"])
+                    all_shows.append(show)
 
     return all_shows
 
@@ -545,10 +548,7 @@ def scrape_icehouse():
         if sort_date < today:
             continue
 
-        # Format show time from the local datetime
-        h12 = dt_local.hour % 12 or 12
-        ampm = "am" if dt_local.hour < 12 else "pm"
-        show_time = f"{h12}:{dt_local.minute:02d}{ampm}" if dt_local.minute else f"{h12}{ampm}"
+        show_time = _format_local_time(dt_local)
 
         prices = show.get("price_per_person", [])
         price_str = None
@@ -764,12 +764,7 @@ def scrape_skyway():
         else:
             venue_name = "Skyway Theatre"
 
-        # Format time
-        hour = dt.hour
-        minute = dt.minute
-        ampm = "am" if hour < 12 else "pm"
-        h12 = hour % 12 or 12
-        show_time = f"{h12}:{minute:02d}{ampm}" if minute else f"{h12}{ampm}"
+        show_time = _format_local_time(dt)
 
         # Unescape HTML entities in title
         title = unescape(title)
@@ -1273,7 +1268,7 @@ def scrape_parkway():
 FIRST_AVE_VENUES = {
     "First Avenue", "7th St Entry", "Palace Theatre",
     "The Fitzgerald Theater", "Fine Line", "Turf Club",
-    "Amsterdam Bar & Hall", "The Armory", "The Cedar Cultural Center",
+    "Amsterdam Bar & Hall", "The Armory",
 }
 
 
@@ -1733,23 +1728,40 @@ def write_html(shows):
 
 if __name__ == "__main__":
     TM_API_KEY = os.environ.get("TM_API_KEY", "")
-    shows = scrape_first_avenue()
-    shows += scrape_dakota()
-    shows += scrape_cedar()
-    shows += scrape_orchestra()
-    shows += scrape_ticketmaster(TM_API_KEY)
-    shows += scrape_myth()
-    shows += scrape_white_squirrel()
-    shows += scrape_icehouse()
-    shows += scrape_331()
-    shows += scrape_skyway()
-    shows += scrape_pilllar()
-    shows += scrape_underground()
-    shows += scrape_zhora_darling()
-    shows += scrape_cloudland()
-    shows += scrape_parkway()
-    shows += scrape_berlin()
-    shows += scrape_uptown_vfw()
+
+    # Each scraper is network-bound, so run them all in parallel.
+    scrapers = [
+        ("First Avenue (all venues)", scrape_first_avenue),
+        ("Dakota Jazz Club", scrape_dakota),
+        ("Cedar Cultural Center", scrape_cedar),
+        ("Orchestra Hall", scrape_orchestra),
+        ("Ticketmaster venues", lambda: scrape_ticketmaster(TM_API_KEY)),
+        ("Myth Live", scrape_myth),
+        ("White Squirrel", scrape_white_squirrel),
+        ("Ice House", scrape_icehouse),
+        ("331 Club", scrape_331),
+        ("Skyway Theatre", scrape_skyway),
+        ("Pilllar Forum", scrape_pilllar),
+        ("Underground Music Venue", scrape_underground),
+        ("Zhora Darling", scrape_zhora_darling),
+        ("Cloudland Theater", scrape_cloudland),
+        ("The Parkway Theater", scrape_parkway),
+        ("Berlin", scrape_berlin),
+        ("Uptown VFW", scrape_uptown_vfw),
+    ]
+
+    shows = []
+    with ThreadPoolExecutor(max_workers=len(scrapers)) as executor:
+        futures = {executor.submit(fn): name for name, fn in scrapers}
+        for future in futures:
+            name = futures[future]
+            try:
+                result = future.result()
+                shows += result
+                print(f"  [{name}] {len(result)} shows")
+            except Exception as e:
+                print(f"  [{name}] FAILED: {e}")
+
     shows.sort(key=lambda x: x["sort_date"])
     shows = deduplicate(shows)
     shows = filter_junk_and_sports(shows)
