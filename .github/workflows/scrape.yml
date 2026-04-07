@@ -36,6 +36,9 @@ jobs:
           TM_API_KEY: ${{ secrets.TM_API_KEY }}
         run: python scraper.py
 
+      - name: Render HTML
+        run: python render.py
+
       - name: Add CNAME file
         run: echo "giglist.info" > CNAME
 
@@ -45,4 +48,4 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: .
           publish_branch: gh-pages
-          exclude_assets: '.github,scraper.py,.gitignore,.env,__pycache__'
+          exclude_assets: '.github,scraper.py,render.py,models.py,tests,shows.json,.gitignore,.env,__pycache__'
