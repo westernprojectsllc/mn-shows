@@ -199,37 +199,46 @@ def scrape_cedar():
     shows = []
     seen = set()
 
-    for a_tag in soup.select("a.eventlist-title-link"):
+    for ev in soup.select("article.eventlist-event--upcoming"):
+        a_tag = ev.select_one("a.eventlist-title-link")
+        date_tag = ev.select_one("time.event-date")
+        if not a_tag or not date_tag:
+            continue
+
         href = a_tag.get("href", "")
         if href in seen:
             continue
         seen.add(href)
 
-        title = a_tag.get_text(separator=" ", strip=True)
-        full_url = "https://www.thecedar.org" + href
+        try:
+            sort_date = datetime.strptime(
+                date_tag.get("datetime", ""), "%Y-%m-%d"
+            ).date()
+        except ValueError:
+            continue
 
-        sort_date = None
-        time_tag = a_tag.find_next("time")
-        if time_tag:
-            dt = time_tag.get("datetime", "")
-            if dt:
-                try:
-                    sort_date = datetime.strptime(dt[:10], "%Y-%m-%d").date()
-                except ValueError:
-                    pass
+        show_time = None
+        start_tag = ev.select_one(
+            "time.event-time-localized-start, time.event-time-localized"
+        )
+        if start_tag:
+            try:
+                dt = datetime.strptime(start_tag.get_text(strip=True), "%I:%M %p")
+                show_time = _format_local_time(dt)
+            except ValueError:
+                pass
 
-        if sort_date:
-            shows.append({
-                "title": title,
-                "sort_date": sort_date,
-                "venue": "Cedar Cultural Center",
-                "url": full_url,
-                "price": None,
-                "sold_out": False,
-                "time": None,
-                "supports": [],
-                "doors": None,
-            })
+        shows.append({
+            "title": a_tag.get_text(separator=" ", strip=True),
+            "sort_date": sort_date,
+            "venue": "Cedar Cultural Center",
+            "url": "https://www.thecedar.org" + href,
+            "price": None,
+            "sold_out": False,
+            "time": show_time,
+            "supports": [],
+            "doors": None,
+        })
 
     return shows
 
@@ -1120,8 +1129,12 @@ def scrape_berlin():
         if href and not href.startswith("http"):
             href = "https://www.berlinmpls.com" + href
 
+        # Single-day events use .event-time-localized-start; multi-day events
+        # use plain .event-time-localized (first one is the start time).
         show_time = None
-        start_tag = ev.select_one("time.event-time-localized-start")
+        start_tag = ev.select_one(
+            "time.event-time-localized-start, time.event-time-localized"
+        )
         if start_tag:
             try:
                 dt = datetime.strptime(start_tag.get_text(strip=True), "%I:%M %p")
