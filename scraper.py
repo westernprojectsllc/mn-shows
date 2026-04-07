@@ -271,7 +271,8 @@ def scrape_orchestra():
                 continue
 
             try:
-                sort_date = datetime.strptime(perf_date[:10], "%Y-%m-%d").date()
+                dt = datetime.fromisoformat(perf_date)
+                sort_date = dt.date()
             except ValueError:
                 continue
 
@@ -284,6 +285,8 @@ def scrape_orchestra():
             if event_url and not event_url.startswith("http"):
                 event_url = "https://www.minnesotaorchestra.org" + event_url
 
+            show_time = _format_local_time(dt) if (dt.hour or dt.minute) else None
+
             shows.append({
                 "title": title,
                 "sort_date": sort_date,
@@ -291,7 +294,7 @@ def scrape_orchestra():
                 "url": event_url,
                 "price": None,
                 "sold_out": False,
-                "time": None,
+                "time": show_time,
                 "supports": [],
                 "doors": None,
             })
