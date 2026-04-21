@@ -42,9 +42,6 @@ jobs:
       - name: Render HTML
         run: python render.py
 
-      - name: Add CNAME file
-        run: echo "giglist.info" > CNAME
-
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v4
         with:
