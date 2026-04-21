@@ -1,14 +1,8 @@
 name: Scrape and Deploy
 
 on:
-  schedule:
-    - cron: '0 12 * * *'  # Runs daily at 7am Central (noon UTC)
-  workflow_dispatch:  # Allows manual trigger from GitHub
-  push:
-    branches: [main]
-    paths-ignore:
-      - '.gitignore'
-      - 'README.md'
+  # Scheduled scraping moved to giglist-all. Kept as manual-only for backup.
+  workflow_dispatch:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
