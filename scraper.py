@@ -22,7 +22,7 @@ HTTP_HEADERS = {"User-Agent": USER_AGENT}
 CENTRAL_TZ = ZoneInfo("America/Chicago")
 
 DICE_API_URL = "https://partners-endpoint.dice.fm/api/v2/events"
-DICE_API_KEY = "nJgJNUHjJM4Yuzmwo4LIe7nu1JDqGqnl8icHUeC9"
+DICE_API_KEY = os.environ.get("DICE_API_KEY", "")
 
 
 def scrape_month(start_date):
@@ -450,24 +450,23 @@ def scrape_icehouse():
         print(f"  Error: {e}")
         return []
 
-    # Ice House embeds data as a Python dict literal containing JSON values.
-    # Extract just the pagination JSON object, which contains "performances".
-    match = re.search(r"'pagination':\s*", response.text)
+    match = re.search(r"window\.__pinia\s*=\s*", response.text)
     if not match:
-        print("  Could not find pagination data in Ice House page")
+        print("  Could not find Pinia data in Ice House page")
         return []
 
     try:
         decoder = json.JSONDecoder()
-        data, _ = decoder.raw_decode(response.text[match.end():])
-    except (json.JSONDecodeError, ValueError):
+        pinia, _ = decoder.raw_decode(response.text[match.end():])
+        performances = pinia["performancePaginate"]["performances"]
+    except (json.JSONDecodeError, ValueError, KeyError):
         print("  Failed to parse Ice House JSON")
         return []
 
     shows = []
     today = date.today()
 
-    for perf in data.get("performances", []):
+    for perf in performances:
         show = perf.get("show", {})
         title = show.get("name", "Unknown")
         show_id = show.get("id")
@@ -910,6 +909,9 @@ def _scrape_dice(venue_name, dice_venues, dice_promoters=None, exclude_tags=None
     """Generic Dice.fm partners API scraper. dice_venues is the list of
     venue names to filter by; dice_promoters is optional. exclude_tags is
     a set of Dice type_tags to skip (e.g. {'culture:film'} to drop movies)."""
+    if not DICE_API_KEY:
+        print(f"  Skipping {venue_name} (no DICE_API_KEY set)")
+        return []
     exclude_tags = set(exclude_tags or [])
     print(f"  Fetching {venue_name} (Dice)...")
     params = [("page[size]", "100"), ("types", "linkout,event")]
@@ -1366,9 +1368,13 @@ def deduplicate(shows):
         by_dv.setdefault((s.sort_date, s.venue), []).append(i)
     drop = set()
     for idxs in by_dv.values():
-        for i in idxs:
-            for j in idxs:
-                if i == j or i in drop or j in drop:
+        for a_pos in range(len(idxs)):
+            i = idxs[a_pos]
+            if i in drop:
+                continue
+            for b_pos in range(a_pos + 1, len(idxs)):
+                j = idxs[b_pos]
+                if j in drop:
                     continue
                 a, b = shows[i], shows[j]
                 an, bn = _normalize_title(a.title), _normalize_title(b.title)
@@ -1377,6 +1383,8 @@ def deduplicate(shows):
                 if a.time and b.time and a.time != b.time:
                     continue
                 drop.add(j if _score(a) >= _score(b) else i)
+                if i in drop:
+                    break
     return [s for i, s in enumerate(shows) if i not in drop]
 
 
