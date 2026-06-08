@@ -1,8 +1,7 @@
 name: Smoke Tests
 
 on:
-  schedule:
-    - cron: '0 13 * * *'  # Daily at 8am Central, 1h after the scrape job
+  # Smoke tests moved to giglist-all repo.
   workflow_dispatch:
 
 env:
